@@ -1,0 +1,51 @@
+{
+  "name": "deepstate",
+  "version": "0.1.0",
+  "description": "Proxy-based reactive state management with RxJS. Deep nested state observation with full TypeScript support.",
+  "keywords": [
+    "state",
+    "state-management",
+    "rxjs",
+    "reactive",
+    "proxy",
+    "observable",
+    "store",
+    "deep",
+    "nested",
+    "typescript"
+  ],
+  "author": "Ronnie Magatti",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ronniemagatti/deepstate"
+  },
+  "module": "src/index.ts",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    },
+    "./helpers": {
+      "import": "./src/helpers.ts",
+      "types": "./src/helpers.ts"
+    }
+  },
+  "files": [
+    "src",
+    "docs"
+  ],
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  },
+  "peerDependencies": {
+    "rxjs": "^7"
+  },
+  "dependencies": {
+    "rxjs": "^7.8.2"
+  }
+}
