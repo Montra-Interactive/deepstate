@@ -1,10 +1,11 @@
 /**
- * Ergonomics Evaluation for deepstate
+ * Ergonomics Evaluation for deepstate V1
  * 
  * Testing common use cases to evaluate API feel and developer experience.
+ * Note: This uses V1 which has the update() method for batched mutations.
  */
 
-import { state, select, selectFromEach } from "../src";
+import { stateV1 as state, select, selectFromEach } from "../src";
 import { map, filter, debounceTime, switchMap, take } from "rxjs/operators";
 import { combineLatest, of } from "rxjs";
 

@@ -23,8 +23,15 @@ function deepFreeze<T>(obj: T): T {
   return obj;
 }
 
+// Counter for deepEqual calls (for performance comparison)
+export let deepEqualCallCount = 0;
+export function resetDeepEqualCallCount() {
+  deepEqualCallCount = 0;
+}
+
 // Deep equality check for distinctUntilChanged
 function deepEqual(a: unknown, b: unknown): boolean {
+  deepEqualCallCount++;
   if (a === b) return true;
   if (a === null || b === null) return false;
   if (typeof a !== "object" || typeof b !== "object") return false;

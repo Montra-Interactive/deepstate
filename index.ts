@@ -1,72 +1,92 @@
-import { state } from "./src/deepstate";
+import { state } from "./src/deepstate-v2";
 
+// =============================================================================
+// Example 1: Non-nullable object - full nested access with update()
+// =============================================================================
 
-// Create reactive state with nested objects and arrays
-const myState = state({
+const store = state({
   user: {
     name: "Alice",
-    profile: {
-      age: 30,
-      email: "alice@example.com",
-    },
-    address: {
-      city: "Wonderland",
-      zip: "12345",
-    },
+    age: 30,
   },
-  todos: [
-    { id: 1, text: "Learn RxJS", done: false },
-    { id: 2, text: "Build rx-state", done: true },
-  ],
-  count: 0,
+  settings: {
+    theme: "dark",
+    notifications: true,
+  },
 });
 
-console.log("=== update() Demo ===\n");
+console.log("=== Non-nullable update() Demo ===\n");
 
-// Track emissions
-let stateEmissions = 0;
-myState.subscribe((state) => {
-  stateEmissions++;
-  console.log(`State emission #${stateEmissions}:`, JSON.stringify(state, null, 2));
+// Subscribe to see emissions
+let emissions = 0;
+store.user.subscribe(user => {
+  emissions++;
+  console.log(`Emission #${emissions}: ${user.name}, ${user.age}`);
 });
 
-// Without update() - multiple .set() calls would cause multiple emissions
-// myState.user.name.set("Bob");        // emission
-// myState.user.profile.age.set(31);    // emission
-// myState.user.address.city.set("NY"); // emission
+// Single update with batched changes
+store.user.update(draft => {
+  draft.name.set("Bob");
+  draft.age.set(31);
+});
+// Only 2 emissions: initial + 1 batched update
 
-// With update() - single emission for all changes
-console.log("\n--- Calling update() on user ---");
-const newUser = myState.user.update((user) => {
-  user.name = "Bob";
-  user.profile.age = 31;
-  user.address.city = "New York";
+console.log(`\nTotal emissions: ${emissions} (expected: 2)\n`);
+
+// =============================================================================
+// Example 2: Nullable object - treated as RxLeaf (only get/set whole object)
+// =============================================================================
+
+type NullableState = {
+  user: { name: string; age: number } | null;
+};
+
+const nullableStore = state<NullableState>({
+  user: null,
 });
 
-myState.update(state => {
-  state.user.name = "John";
-  state.todos.push({ id: 3, text: "Review code", done: false });
+console.log("=== Nullable type Demo ===\n");
+
+nullableStore.user.subscribe(user => {
+  console.log(`User: ${user ? `${user.name}, ${user.age}` : "null"}`);
 });
 
-console.log("\nReturned value:", newUser);
-console.log("Total user emissions:", stateEmissions); // 2: initial + 1 update
+// Set the whole object
+nullableStore.user.set({ name: "Charlie", age: 25 });
 
-// Works on arrays too
-console.log("\n--- Calling update() on todos ---");
-let todoEmissions = 0;
-myState.todos.subscribe((todos) => {
-  todoEmissions++;
-  console.log(`Todos emission #${todoEmissions}:`, todos.map((t) => t.text));
+// For nullable types, you work with the whole object:
+const currentUser = nullableStore.user.get();
+if (currentUser !== null) {
+  // Update by getting current value and setting a new one
+  nullableStore.user.set({ ...currentUser, name: "Dave" });
+}
+
+console.log(`\nFinal user: ${JSON.stringify(nullableStore.user.get())}\n`);
+
+// =============================================================================
+// Example 3: Non-nullable nested object for when you need update()
+// =============================================================================
+
+// If you need update() on a user that might not exist yet,
+// consider restructuring your state:
+
+type BetterState = {
+  hasUser: boolean;
+  user: { name: string; age: number }; // Always exists, use hasUser flag
+};
+
+const betterStore = state<BetterState>({
+  hasUser: false,
+  user: { name: "", age: 0 }, // Default empty user
 });
 
-// const newTodos = myState.todos.update((todos) => {
-//   todos.push({ id: 3, text: "Write tests", done: false });
-//   todos.push({ id: 4, text: "Deploy", done: false });
-//   if (todos[0]) todos[0].done = true; // Mark first todo as done
-// });
+// Now you can use update() on user
+betterStore.user.update(draft => {
+  draft.name.set("Eve");
+  draft.age.set(28);
+});
+betterStore.hasUser.set(true);
 
-// console.log("\nNew todos:", newTodos);
-console.log("Total todo emissions:", todoEmissions); // 2: initial + 1 update
-
-console.log("\n--- Final state ---");
-console.log(JSON.stringify(myState.get(), null, 2));
+console.log("=== Better pattern for optional user ===");
+console.log(`hasUser: ${betterStore.hasUser.get()}`);
+console.log(`user: ${JSON.stringify(betterStore.user.get())}`);
