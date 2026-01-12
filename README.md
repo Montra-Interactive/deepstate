@@ -313,6 +313,46 @@ store.user.name.set("Bob"); // Only 3 nodes notified, regardless of store size
 
 The deeper your state tree and the more subscribers you have, the bigger the win.
 
+### Comparison with Valtio
+
+Valtio is clever - you just mutate and changes propagate automatically:
+
+```ts
+// Valtio: implicit mutations
+const state = proxy({ user: { name: "Alice" } });
+state.user.name = "Bob"; // Just mutate, magic happens
+```
+
+This feels great initially, but in larger apps it becomes problematic:
+
+1. **Mutations anywhere**: Any code with a reference can mutate state. Hard to track where changes originate.
+
+2. **No explicit update points**: With implicit mutation, there's no clear "this is where state changes" in your code. Debugging becomes harder.
+
+3. **Accidental mutations**: Easy to mutate when you meant to read, especially with object/array references.
+
+deepstate requires explicit `.set()` calls:
+
+```ts
+// deepstate: explicit updates
+const store = state({ user: { name: "Alice" } });
+store.user.name.set("Bob"); // Explicit - you know state is changing here
+
+// Values are frozen - accidental mutation throws
+const user = store.user.get();
+user.name = "Bob"; // Error: Cannot assign to read only property
+```
+
+| Aspect | Valtio | deepstate |
+|--------|--------|-----------|
+| Mutation style | Implicit (just assign) | Explicit (`.set()`) |
+| Change tracking | Hard to trace | Grep for `.set(` |
+| Accidental mutations | Possible | Prevented (frozen values) |
+| Learning curve | Lower | Slightly higher |
+| Large codebase | Can get messy | Predictable |
+
+Both libraries have fine-grained reactivity, but deepstate trades some convenience for explicitness that pays off as your codebase grows.
+
 ## TypeScript
 
 deepstate is fully typed. Types are inferred from your initial state:
