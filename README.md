@@ -91,18 +91,38 @@ store.user.subscribe((user) => console.log(user)); // Emits when any child chang
 Use `.update()` to batch multiple changes into a single emission:
 
 ```ts
-// Without batching - emits twice
+// Without batching - emits twice, intermediate state visible
 store.user.name.set("Bob");
 store.user.age.set(31);
+// Subscribers see: { name: "Bob", age: 30 } then { name: "Bob", age: 31 }
 
-// With batching - emits once
+// With batching - emits once, only final state visible
 store.user.update((user) => {
   user.name.set("Bob");
   user.age.set(31);
 });
+// Subscribers see: { name: "Bob", age: 31 }
 ```
 
 The callback receives the reactive state node, so you use `.set()` on properties.
+
+### Why batching matters
+
+**Performance**: Without batching, N changes trigger N emissions. Each emission may cause React re-renders, DOM updates, or other expensive operations. Batching reduces this to 1 emission.
+
+**Predictability**: Without batching, subscribers see intermediate states that may be inconsistent. For example, updating `firstName` and `lastName` separately means subscribers briefly see mismatched names. Batching ensures subscribers only see consistent, complete states.
+
+**Debugging**: With batching, state transitions are atomic. You go from state A to state B with no intermediate states to reason about.
+
+```ts
+// Example: form submission
+store.form.update((form) => {
+  form.isSubmitting.set(true);
+  form.error.set(null);
+  form.lastSubmitted.set(Date.now());
+});
+// Subscribers see one consistent update, not 3 separate changes
+```
 
 ## Arrays
 
