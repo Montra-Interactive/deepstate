@@ -1,4 +1,4 @@
-import { state } from "../src/deepstate-v2";
+import { state } from "../src";
 
 // =============================================================================
 // Example 1: Non-nullable object - full nested access with update()
