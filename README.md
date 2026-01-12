@@ -180,16 +180,13 @@ store.user?.set(null);  // Works!
 store.user?.set({ name: "Bob", age: 25 });  // Works!
 ```
 
-### `updateIfPresent()`
-
-Safely update nullable objects only when they're non-null:
+Nullable objects also support `update()` for batched changes:
 
 ```ts
-store.user?.updateIfPresent((user) => {
+store.user?.update((user) => {
   user.name.set("Updated");
   user.age.set(31);
 });
-// Callback only runs if user is not null
 ```
 
 ## Helpers
@@ -322,7 +319,7 @@ import type { RxState, Draft, DeepReadonly } from "deepstate";
 | `RxLeaf<T>` | `get()`, `set()`, `subscribe()`, `pipe()`, `subscribeOnce()` |
 | `RxObject<T>` | Above + `update()`, child properties |
 | `RxArray<T>` | Above + `at()`, `push()`, `pop()`, `length`, `map()`, `filter()` |
-| `RxNullable<T>` | Above + `updateIfPresent()`, optional child access |
+| `RxNullable<T>` | Above + `update()`, optional child access |
 
 ## License
 

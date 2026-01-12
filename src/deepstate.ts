@@ -202,14 +202,14 @@ type RxNullableInner<T, TNonNull extends object> = Observable<DeepReadonly<T>> &
   /** Subscribe to a single emission, then automatically unsubscribe */
   subscribeOnce(callback: (value: DeepReadonly<T>) => void): Subscription;
   /**
-   * Update when non-null. Callback only runs if value is not null/undefined.
+   * Update multiple properties in a single emission.
    * @example
-   * store.user?.updateIfPresent(user => {
+   * store.user?.update(user => {
    *   user.name.set("Bob");
    *   user.age.set(31);
    * });
    */
-  updateIfPresent(callback: (draft: RxObject<TNonNull>) => void): DeepReadonly<T>;
+  update(callback: (draft: RxObject<TNonNull>) => void): DeepReadonly<T>;
   [NODE]: NodeCore<T>;
 } & {
   /** Child properties - accessible after optional chaining on parent */
@@ -901,30 +901,28 @@ function createNodeForValue<T>(value: T, maybeNullable: boolean = false): NodeCo
  * Wraps a nullable object node with a proxy that:
  * - Returns undefined for child property access when value is null
  * - Creates/returns wrapped children when value is non-null
- * - Provides updateIfPresent() for safe updates
+ * - Provides update() for batched updates
  */
 function wrapNullableWithProxy<T>(node: NullableNodeCore<T>): RxNullable<T> {
-  // Create updateIfPresent function
-  const updateIfPresent = (callback: (draft: object) => void): T => {
-    if (!node.isNull()) {
-      node.lock();
-      try {
-        // Build a proxy for the children
-        const childrenProxy = new Proxy({} as object, {
-          get(_, prop: PropertyKey) {
-            if (typeof prop === "string") {
-              const child = node.getChild(prop);
-              if (child) {
-                return wrapWithProxy(child);
-              }
+  // Create update function
+  const update = (callback: (draft: object) => void): T => {
+    node.lock();
+    try {
+      // Build a proxy for the children
+      const childrenProxy = new Proxy({} as object, {
+        get(_, prop: PropertyKey) {
+          if (typeof prop === "string") {
+            const child = node.getChild(prop);
+            if (child) {
+              return wrapWithProxy(child);
             }
-            return undefined;
-          },
-        });
-        callback(childrenProxy);
-      } finally {
-        node.unlock();
-      }
+          }
+          return undefined;
+        },
+      });
+      callback(childrenProxy);
+    } finally {
+      node.unlock();
     }
     return node.get();
   };
@@ -939,7 +937,7 @@ function wrapNullableWithProxy<T>(node: NullableNodeCore<T>): RxNullable<T> {
       // Node methods
       if (prop === "get") return node.get;
       if (prop === "set") return node.set;
-      if (prop === "updateIfPresent") return updateIfPresent;
+      if (prop === "update") return update;
       if (prop === "subscribeOnce") return node.subscribeOnce;
       if (prop === NODE) return node;
 

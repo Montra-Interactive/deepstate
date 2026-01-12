@@ -190,21 +190,7 @@ describe('nullable objects', () => {
     });
   });
 
-  describe('updateIfPresent', () => {
-    test('should be no-op when null', () => {
-      type State = {
-        user: { name: string; age: number } | null;
-      };
-
-      const store = state<State>({ user: null });
-
-      store.user?.updateIfPresent((user) => {
-        user.name.set('Should not happen');
-      });
-
-      expect(store.user?.get()).toBe(null);
-    });
-
+  describe('update() on nullable', () => {
     test('should update when object present', () => {
       type State = {
         user: { name: string; age: number } | null;
@@ -213,7 +199,7 @@ describe('nullable objects', () => {
       const store = state<State>({ user: null });
       store.user?.set({ name: 'Alice', age: 30 });
 
-      store.user?.updateIfPresent((user) => {
+      store.user?.update((user) => {
         user.name.set('Bob');
         user.age.set(31);
       });
@@ -221,7 +207,7 @@ describe('nullable objects', () => {
       expect(store.user?.get()).toEqual({ name: 'Bob', age: 31 });
     });
 
-    test('should batch emissions during updateIfPresent', () => {
+    test('should batch emissions during update', () => {
       type State = {
         user: { name: string; age: number } | null;
       };
@@ -233,7 +219,7 @@ describe('nullable objects', () => {
       store.user?.subscribe(() => emissions++);
       emissions = 0; // Reset after initial
 
-      store.user?.updateIfPresent((user) => {
+      store.user?.update((user) => {
         user.name.set('Bob');
         user.age.set(31);
       });
