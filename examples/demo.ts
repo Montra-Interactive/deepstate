@@ -34,7 +34,7 @@ store.user.update(draft => {
 console.log(`\nTotal emissions: ${emissions} (expected: 2)\n`);
 
 // =============================================================================
-// Example 2: Nullable object - treated as RxLeaf (only get/set whole object)
+// Example 2: Nullable object with deep subscription
 // =============================================================================
 
 type NullableState = {
@@ -47,48 +47,49 @@ const nullableStore = state<NullableState>({
   profile: { avatarUrl: "http://example.com/avatar.png" },
 });
 
-console.log("=== Nullable type Demo ===\n");
+console.log("=== Nullable type with Deep Subscription Demo ===\n");
 
-nullableStore.user?.subscribe(user => {
-  console.log(`User: ${user ? `${user.name}, ${user.age}` : "null"}`);
+// Subscribe to parent (nullable object itself)
+nullableStore.user.subscribe(user => {
+  console.log(`User object: ${user ? `${user.name}, ${user.age}` : "null"}`);
 });
 
-// Set the whole object
-nullableStore.user?.set({ name: "Charlie", age: 25 });
+// Deep subscription - subscribe to nested property even when parent is null!
+nullableStore.user.name.subscribe(name => {
+  console.log(`User name: ${name === undefined ? "undefined (parent is null)" : name}`);
+});
 
-// For nullable types, you work with the whole object:
-const currentUser = nullableStore.user?.get();
-if (!!currentUser) {
-  // Update by getting current value and setting a new one
-  nullableStore.user?.set({ ...currentUser, name: "Dave" });
-}
+// Set the whole object - both subscriptions emit
+nullableStore.user.set({ name: "Charlie", age: 25 });
 
-console.log(`\nFinal user: ${JSON.stringify(nullableStore.user?.get())}\n`);
+// Update just the name - deep subscription tracks this
+nullableStore.user.name.set("Dave");
+
+// Set back to null - deep subscription emits undefined
+nullableStore.user.set(null);
+
+console.log(`\nFinal user: ${JSON.stringify(nullableStore.user.get())}\n`);
 
 // =============================================================================
-// Example 3: Non-nullable nested object for when you need update()
+// Example 3: Nullable with update() after setting value
 // =============================================================================
 
-// If you need update() on a user that might not exist yet,
-// consider restructuring your state:
+// You can use update() on nullable objects after they have a value:
 
-type BetterState = {
-  hasUser: boolean;
-  user: { name: string; age: number }; // Always exists, use hasUser flag
-};
-
-const betterStore = state<BetterState>({
-  hasUser: false,
-  user: { name: "", age: 0 }, // Default empty user
+const nullableWithUpdate = state<NullableState>({
+  user: null,
+  profile: { avatarUrl: "http://example.com/avatar.png" },
 });
 
-// Now you can use update() on user
-betterStore.user.update(draft => {
-  draft.name.set("Eve");
-  draft.age.set(28);
-});
-betterStore.hasUser.set(true);
+console.log("=== Nullable with update() Demo ===\n");
 
-console.log("=== Better pattern for optional user ===");
-console.log(`hasUser: ${betterStore.hasUser.get()}`);
-console.log(`user: ${JSON.stringify(betterStore.user.get())}`);
+// Set initial value
+nullableWithUpdate.user.set({ name: "Eve", age: 28 });
+
+// Now you can use update() for batched changes
+nullableWithUpdate.user.update(user => {
+  user.name.set("Updated Eve");
+  user.age.set(29);
+});
+
+console.log(`user: ${JSON.stringify(nullableWithUpdate.user.get())}`);

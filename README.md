@@ -161,7 +161,7 @@ store.items.update(items => {
 
 ## Nullable Objects
 
-Properties typed as `{ ... } | null` are fully supported:
+Properties typed as `{ ... } | null` are fully supported with **deep subscription**:
 
 ```ts
 interface State {
@@ -170,16 +170,23 @@ interface State {
 
 const store = state<State>({ user: null });
 
-// Access requires optional chaining (TypeScript enforces this)
-store.user?.get();                    // null
-store.user?.set({ name: "Alice", age: 30 });
-store.user?.name.get();               // "Alice"
-store.user?.name.set("Bob");
-store.user?.set(null);                // Back to null
+// Deep subscription - works even when user is null!
+store.user.name.subscribe(name => {
+  console.log(name); // undefined when user is null, actual value when set
+});
 
-// Subscribe still works
-store.user?.subscribe(user => console.log(user));
+// Access the nullable parent
+store.user.get();                     // null
+store.user.set({ name: "Alice", age: 30 }); // subscription above emits "Alice"
+store.user.name.get();                // "Alice"
+store.user.name.set("Bob");           // subscription emits "Bob"
+store.user.set(null);                 // subscription emits undefined
+
+// Subscribe to parent
+store.user.subscribe(user => console.log(user));
 ```
+
+This enables subscribing to deeply nested properties before the parent exists - useful for setting up subscriptions early in component lifecycle.
 
 ### `nullable()` Helper
 
@@ -196,14 +203,14 @@ const store = state({
   user: nullable({ name: "Alice", age: 30 }),
 });
 
-store.user?.set(null);  // Works!
-store.user?.set({ name: "Bob", age: 25 });  // Works!
+store.user.set(null);  // Works!
+store.user.set({ name: "Bob", age: 25 });  // Works!
 ```
 
 Nullable objects also support `update()` for batched changes:
 
 ```ts
-store.user?.update(user => {
+store.user.update(user => {
   user.name.set("Updated");
   user.age.set(31);
 });
