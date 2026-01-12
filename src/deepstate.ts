@@ -563,7 +563,6 @@ function createNullableObjectNode<T>(
   };
   
   // Override buildChildren to update the reference
-  const originalBuildChildren = buildChildren;
   const buildChildrenAndUpdate = (obj: object) => {
     const keys = Object.keys(obj);
     children = new Map();
@@ -783,7 +782,6 @@ function createNestedObjectProjection<T extends object>(
 
   // For each property of the nested object
   for (const nestedKey of keys) {
-    const nestedInitial = initialValue[nestedKey];
 
     // Create a projection for this nested property
     const nested$ = parentArray$.pipe(
@@ -1153,7 +1151,6 @@ export function state<T extends object>(initialState: T): RxState<T> {
 // Symbol to mark a value as nullable
 const NULLABLE_MARKER = Symbol("nullable");
 
-type NullableMarked<T> = T & { [NULLABLE_MARKER]: true };
 
 /**
  * Marks a value as nullable, allowing it to transition between null and object.
