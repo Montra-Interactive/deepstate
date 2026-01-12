@@ -32,7 +32,7 @@ const store = state({
 });
 
 // Subscribe to any property (it's an Observable)
-store.user.name.subscribe((name) => console.log("Name:", name));
+store.user.name.subscribe(name => console.log("Name:", name));
 
 // Get values synchronously
 console.log(store.user.name.get()); // "Alice"
@@ -42,7 +42,7 @@ store.user.name.set("Bob"); // triggers subscription above
 store.count.set(5);
 
 // Subscribe to parent nodes (emits when any child changes)
-store.user.subscribe((user) => console.log("User:", user));
+store.user.subscribe(user => console.log("User:", user));
 ```
 
 ## Core API
@@ -82,8 +82,8 @@ store.user.name.get();  // "Alice"
 store.user.name.set("Bob");
 
 // Subscribe at any level
-store.user.name.subscribe((name) => console.log(name));
-store.user.subscribe((user) => console.log(user)); // Emits when any child changes
+store.user.name.subscribe(name => console.log(name));
+store.user.subscribe(user => console.log(user)); // Emits when any child changes
 ```
 
 ## Batched Updates
@@ -97,7 +97,7 @@ store.user.age.set(31);
 // Subscribers see: { name: "Bob", age: 30 } then { name: "Bob", age: 31 }
 
 // With batching - emits once, only final state visible
-store.user.update((user) => {
+store.user.update(user => {
   user.name.set("Bob");
   user.age.set(31);
 });
@@ -116,7 +116,7 @@ The callback receives the reactive state node, so you use `.set()` on properties
 
 ```ts
 // Example: form submission
-store.form.update((form) => {
+store.form.update(form => {
   form.isSubmitting.set(true);
   form.error.set(null);
   form.lastSubmitted.set(Date.now());
@@ -146,14 +146,14 @@ store.items.pop();                            // Returns removed item
 store.items.length.get();                     // Current length (also observable)
 
 // Observable length
-store.items.length.subscribe((len) => console.log("Length:", len));
+store.items.length.subscribe(len => console.log("Length:", len));
 
 // Non-reactive iteration (use subscribe for reactive)
 store.items.map((item, i) => item.name);
-store.items.filter((item) => item.id > 1);
+store.items.filter(item => item.id > 1);
 
 // Batched array updates
-store.items.update((items) => {
+store.items.update(items => {
   items.at(0)?.name.set("Modified");
   items.push({ id: 4, name: "New" });
 });
@@ -178,7 +178,7 @@ store.user?.name.set("Bob");
 store.user?.set(null);                // Back to null
 
 // Subscribe still works
-store.user?.subscribe((user) => console.log(user));
+store.user?.subscribe(user => console.log(user));
 ```
 
 ### `nullable()` Helper
@@ -203,7 +203,7 @@ store.user?.set({ name: "Bob", age: 25 });  // Works!
 Nullable objects also support `update()` for batched changes:
 
 ```ts
-store.user?.update((user) => {
+store.user?.update(user => {
   user.name.set("Updated");
   user.age.set(31);
 });
@@ -247,16 +247,14 @@ const store = state({
 });
 
 // Select single property
-selectFromEach(store.items, (item) => item.price).subscribe((prices) => {
+selectFromEach(store.items, item => item.price).subscribe(prices => {
   console.log(prices); // [10, 20]
 });
 
 // Derive computed values
-selectFromEach(store.items, (item) => item.price * item.qty).subscribe(
-  (totals) => {
-    console.log(totals); // [20, 20]
-  }
-);
+selectFromEach(store.items, item => item.price * item.qty).subscribe(totals => {
+  console.log(totals); // [20, 20]
+});
 
 // Only emits when selected values change, not other properties
 store.items.at(0)?.name.set("Changed"); // No emission (name wasn't selected)
@@ -273,10 +271,10 @@ import { debounceTime, filter, map } from "rxjs/operators";
 store.user.name
   .pipe(
     debounceTime(300),
-    filter((name) => name.length > 0),
-    map((name) => name.toUpperCase())
+    filter(name => name.length > 0),
+    map(name => name.toUpperCase())
   )
-  .subscribe((name) => console.log(name));
+  .subscribe(name => console.log(name));
 ```
 
 ## Immutability
