@@ -281,7 +281,37 @@ deepstate uses a **nested BehaviorSubject architecture**:
 This gives you **O(depth) performance** per change:
 - When you update `store.a.b.c`, only `c`, `b`, `a`, and `store` are notified
 - Sibling properties like `store.x.y.z` are never touched
-- Compare to O(subscribers) in single-observable architectures
+
+### Comparison with Redux
+
+In Redux, every state change runs **all selectors** to check if their selected slice changed:
+
+```ts
+// Redux: O(selectors) per change
+// If you have 100 selectors and update user.name, all 100 run
+dispatch(setUserName("Bob")); // Runs ALL selectors
+
+// With memoization (reselect), selectors short-circuit if inputs unchanged,
+// but the selector function is still *called* for every subscriber
+```
+
+In deepstate, changes propagate **only to ancestors**:
+
+```ts
+// deepstate: O(depth) per change  
+// If you update user.name, only user.name -> user -> store are notified
+store.user.name.set("Bob"); // Only 3 nodes notified, regardless of store size
+
+// Subscribers to store.settings, store.items, etc. are never invoked
+```
+
+| Store Size | Redux (per change) | deepstate (per change) |
+|------------|-------------------|------------------------|
+| 10 selectors | 10 calls | ~3 notifications |
+| 100 selectors | 100 calls | ~3 notifications |
+| 1000 selectors | 1000 calls | ~3 notifications |
+
+The deeper your state tree and the more subscribers you have, the bigger the win.
 
 ## TypeScript
 
