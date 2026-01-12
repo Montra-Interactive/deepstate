@@ -307,6 +307,8 @@ This gives you **O(depth) performance** per change:
 - When you update `store.a.b.c`, only `c`, `b`, `a`, and `store` are notified
 - Sibling properties like `store.x.y.z` are never touched
 
+For a deep dive into the internal implementation, see [Internal Architecture](./docs/ARCHITECTURE.md).
+
 ### Comparison with Redux
 
 In Redux, every state change runs **all selectors** to check if their selected slice changed:
