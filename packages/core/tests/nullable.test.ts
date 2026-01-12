@@ -17,15 +17,15 @@ describe('nullable objects', () => {
       expect(store.user?.get()).toBe(null);
     });
 
-    test('should return undefined for child access when null', () => {
+    test('should return undefined from .get() for child when parent is null', () => {
       type State = {
         user: { name: string; age: number } | null;
       };
 
       const store = state<State>({ user: null });
 
-      // Child access should return undefined when null
-      expect(store.user?.name).toBeUndefined();
+      // Child node always exists (for deep subscription), but get() returns undefined when parent is null
+      expect(store.user.name.get()).toBeUndefined();
     });
 
     test('should allow setting object value', () => {
@@ -289,6 +289,119 @@ describe('nullable objects', () => {
       store.user?.address?.set({ city: 'NYC', zip: '10001' });
 
       expect(store.user?.address?.city.get()).toBe('NYC');
+    });
+  });
+
+  describe('deep subscription through null', () => {
+    test('should allow subscribing to child when parent is null', () => {
+      type State = {
+        user: { name: string; age: number } | null;
+      };
+
+      const store = state<State>({ user: null });
+      const emissions: (string | undefined)[] = [];
+
+      // Subscribe to name even though user is null
+      store.user.name.subscribe((name) => {
+        emissions.push(name);
+      });
+
+      // Should emit undefined initially since parent is null
+      expect(emissions).toEqual([undefined]);
+    });
+
+    test('should emit value when parent is set after subscription', () => {
+      type State = {
+        user: { name: string; age: number } | null;
+      };
+
+      const store = state<State>({ user: null });
+      const emissions: (string | undefined)[] = [];
+
+      // Subscribe to name while user is null
+      store.user.name.subscribe((name) => {
+        emissions.push(name);
+      });
+
+      // Now set user to an object
+      store.user.set({ name: 'Alice', age: 30 });
+
+      expect(emissions).toEqual([undefined, 'Alice']);
+    });
+
+    test('should emit undefined when parent is set back to null', () => {
+      type State = {
+        user: { name: string } | null;
+      };
+
+      const store = state<State>({ user: null });
+      const emissions: (string | undefined)[] = [];
+
+      store.user.name.subscribe((name) => {
+        emissions.push(name);
+      });
+
+      store.user.set({ name: 'Alice' });
+      store.user.set(null);
+
+      expect(emissions).toEqual([undefined, 'Alice', undefined]);
+    });
+
+    test('should track child updates after parent is set', () => {
+      type State = {
+        user: { name: string } | null;
+      };
+
+      const store = state<State>({ user: null });
+      const emissions: (string | undefined)[] = [];
+
+      store.user.name.subscribe((name) => {
+        emissions.push(name);
+      });
+
+      store.user.set({ name: 'Alice' });
+      store.user.name.set('Bob');
+
+      expect(emissions).toEqual([undefined, 'Alice', 'Bob']);
+    });
+
+    test('should support multiple child subscriptions simultaneously', () => {
+      type State = {
+        user: { name: string; age: number } | null;
+      };
+
+      const store = state<State>({ user: null });
+      const nameEmissions: (string | undefined)[] = [];
+      const ageEmissions: (number | undefined)[] = [];
+
+      store.user.name.subscribe((name) => nameEmissions.push(name));
+      store.user.age.subscribe((age) => ageEmissions.push(age));
+
+      store.user.set({ name: 'Alice', age: 30 });
+
+      expect(nameEmissions).toEqual([undefined, 'Alice']);
+      expect(ageEmissions).toEqual([undefined, 30]);
+    });
+
+    test('child .get() returns undefined when parent is null', () => {
+      type State = {
+        user: { name: string } | null;
+      };
+
+      const store = state<State>({ user: null });
+
+      expect(store.user.name.get()).toBeUndefined();
+    });
+
+    test('child .get() returns value when parent has value', () => {
+      type State = {
+        user: { name: string } | null;
+      };
+
+      const store = state<State>({ user: null });
+      store.user.set({ name: 'Alice' });
+
+      expect(store.user.name.get()).toBe('Alice');
     });
   });
 

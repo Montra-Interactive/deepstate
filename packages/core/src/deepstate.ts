@@ -183,18 +183,25 @@ type RxArray<T> = Observable<DeepReadonly<T[]>> & {
 /**
  * RxNullable - For properties typed as `{ ... } | null` or `{ ... } | undefined`
  * 
- * Access requires optional chaining since the underlying value may be null.
- * The node is always present at runtime, but TypeScript enforces ?. to remind
- * you that the value might be null.
+ * The node is always present at runtime, enabling deep subscription:
+ * - You can subscribe to `store.user.name` even when `user` is null
+ * - The subscription will emit `undefined` while user is null
+ * - Once user is set to an object, the subscription will emit the actual name value
  * 
  * @example
  * const store = state<{ user: { name: string } | null }>({ user: null });
- * store.user?.get();             // null - need ?. because value might be null
- * store.user?.set({ name: "Alice" }); // need ?.
- * store.user?.name.get();        // "Alice" - after ?. on user, children are accessible
- * store.user?.name.set("Bob");   // works after ?.
+ * 
+ * // Deep subscription works even when user is null
+ * store.user.name.subscribe(name => {
+ *   console.log(name); // undefined when user is null, actual value when set
+ * });
+ * 
+ * store.user.get();                    // null
+ * store.user.set({ name: "Alice" });   // Now name subscription emits "Alice"
+ * store.user.name.get();               // "Alice"
+ * store.user.name.set("Bob");          // Works!
  */
-type RxNullableInner<T, TNonNull extends object> = Observable<DeepReadonly<T>> & {
+type RxNullable<T, TNonNull extends object = NonNullablePart<T> & object> = Observable<DeepReadonly<T>> & {
   /** Get current value (may be null/undefined) */
   get(): DeepReadonly<T>;
   /** Set value (can be null/undefined or the full object) */
@@ -204,7 +211,7 @@ type RxNullableInner<T, TNonNull extends object> = Observable<DeepReadonly<T>> &
   /**
    * Update multiple properties in a single emission.
    * @example
-   * store.user?.update(user => {
+   * store.user.update(user => {
    *   user.name.set("Bob");
    *   user.age.set(31);
    * });
@@ -212,15 +219,49 @@ type RxNullableInner<T, TNonNull extends object> = Observable<DeepReadonly<T>> &
   update(callback: (draft: RxObject<TNonNull>) => void): DeepReadonly<T>;
   [NODE]: NodeCore<T>;
 } & {
-  /** Child properties - accessible after optional chaining on parent */
-  [K in keyof TNonNull]: RxNodeFor<TNonNull[K]>;
+  /** 
+   * Child properties - always accessible, even when parent value is null.
+   * When parent is null, children emit undefined. When parent has a value,
+   * children emit their actual values.
+   */
+  [K in keyof TNonNull]: RxNullableChild<TNonNull[K]>;
 };
 
-// RxNullable is typed as potentially undefined to enforce ?. access
-// At runtime the node always exists, but this enforces the mental model
-// that "user might be null, so use ?."
-type RxNullable<T, TNonNull extends object = NonNullablePart<T> & object> = 
-  RxNullableInner<T, TNonNull> | undefined;
+/**
+ * Type for children of a nullable object.
+ * Children are wrapped to handle the case where parent is null:
+ * - When parent is null: get() returns undefined, subscribe emits undefined
+ * - When parent has value: behaves like normal RxNodeFor
+ */
+type RxNullableChild<T> = 
+  // For nested nullable objects, use RxNullable (allows further deep subscription)
+  IsNullableObject<T> extends true
+    ? RxNullable<T>
+  // For primitives, wrap with undefined union since parent might be null
+  : [T] extends [Primitive]
+    ? RxLeaf<T | undefined>
+  // For arrays under nullable parent
+  : [T] extends [Array<infer U>]
+    ? RxArray<U> | RxLeaf<undefined>
+  // For objects under nullable parent  
+  : [T] extends [object]
+    ? RxNullableChildObject<T>
+  // Fallback
+  : RxLeaf<T | undefined>;
+
+/**
+ * Type for object children under a nullable parent.
+ * The object itself might be undefined (if parent is null), but if present
+ * it has all the normal object methods and children.
+ */
+type RxNullableChildObject<T extends object> = Observable<DeepReadonly<T> | undefined> & {
+  get(): DeepReadonly<T> | undefined;
+  set(value: T): void;
+  subscribeOnce(callback: (value: DeepReadonly<T> | undefined) => void): Subscription;
+  [NODE]: NodeCore<T | undefined>;
+} & {
+  [K in keyof T]: RxNullableChild<T[K]>;
+};
 
 type RxNodeFor<T> = 
   // First: check for nullable object (e.g., { name: string } | null)
@@ -477,7 +518,18 @@ const NULLABLE_NODE = Symbol("nullableNode");
 interface NullableNodeCore<T> extends NodeCore<T> {
   [NULLABLE_NODE]: true;
   children: Map<string, NodeCore<unknown>> | null;
+  /**
+   * Gets or creates a child node for the given key.
+   * If the parent is null and the child doesn't exist yet, creates a "pending" child
+   * that derives from the parent and emits undefined until the parent is set to an object.
+   */
   getChild(key: string): NodeCore<unknown> | undefined;
+  /**
+   * Gets or creates a child node that supports deep subscription.
+   * Unlike getChild, this always returns a node (creating one if needed) so that
+   * subscriptions work even when the parent is null.
+   */
+  getOrCreateChild(key: string): NodeCore<unknown>;
   lock(): void;
   unlock(): void;
   isNull(): boolean;
@@ -497,6 +549,10 @@ function createNullableObjectNode<T>(
   
   // Children are created lazily when we have an actual object
   let children: Map<string, NodeCore<unknown>> | null = null;
+  
+  // Pending children - created for deep subscription before parent has a value
+  // These are "projection" nodes that derive from the parent observable
+  const pendingChildren = new Map<string, NodeCore<unknown>>();
   
   // Lock for batching updates
   const lock$ = new BehaviorSubject<boolean>(true);
@@ -562,7 +618,7 @@ function createNullableObjectNode<T>(
     nodeState.children = children;
   };
   
-  // Override buildChildren to update the reference
+  // Override buildChildren to update the reference and connect pending children
   const buildChildrenAndUpdate = (obj: object) => {
     const keys = Object.keys(obj);
     children = new Map();
@@ -572,6 +628,13 @@ function createNullableObjectNode<T>(
       children.set(key, createNodeForValue((obj as Record<string, unknown>)[key], true));
     }
     updateChildrenRef();
+    
+    // Connect pending children to their real counterparts
+    for (const [key, pendingNode] of pendingChildren) {
+      if (children.has(key) && '_subscribeToRealChild' in pendingNode) {
+        (pendingNode as { _subscribeToRealChild: () => void })._subscribeToRealChild();
+      }
+    }
   };
   
   // Re-initialize if starting with object (using updated builder)
@@ -629,6 +692,95 @@ function createNullableObjectNode<T>(
         return undefined;
       }
       return children.get(key);
+    },
+    
+    getOrCreateChild: (key: string): NodeCore<unknown> => {
+      // If we have real children and the key exists, return the real child
+      if (children && children.has(key)) {
+        return children.get(key)!;
+      }
+      
+      // Check pendingChildren for already-created pending nodes
+      if (pendingChildren.has(key)) {
+        // Even though we have a pending node, if children now exist, return the real child
+        // This handles the case where parent was set after pending node was created
+        if (children && children.has(key)) {
+          return children.get(key)!;
+        }
+        return pendingChildren.get(key)!;
+      }
+      
+      // Create a "pending" child node that derives its value dynamically
+      // When parent is null: emits undefined
+      // When parent has value and real children exist: delegates to real child's observable
+      // When parent has value but real children don't exist yet: extracts from parent value
+      
+      // We use a BehaviorSubject that we manually keep in sync
+      const pendingSubject$ = new BehaviorSubject<unknown>(undefined);
+      
+      // Subscribe to parent changes to update pending subject
+      const parentSubscription = subject$.subscribe((parentValue) => {
+        if (parentValue === null || parentValue === undefined) {
+          pendingSubject$.next(undefined);
+        } else if (children && children.has(key)) {
+          // Real child exists - get its current value
+          pendingSubject$.next(children.get(key)!.get());
+        } else {
+          // Extract from parent value
+          pendingSubject$.next((parentValue as Record<string, unknown>)[key]);
+        }
+      });
+      
+      // Also, we need to subscribe to real child changes when it exists
+      // We'll do this by tracking when children are created and subscribing
+      let realChildSubscription: Subscription | null = null;
+      
+      const child$ = pendingSubject$.pipe(
+        distinctUntilChanged(),
+        shareReplay(1)
+      );
+      child$.subscribe(); // Keep hot
+      
+      const pendingNode: NodeCore<unknown> & { _subscribeToRealChild: () => void } = {
+        $: child$,
+        get: () => {
+          const parentValue = subject$.getValue();
+          if (parentValue === null || parentValue === undefined) {
+            return undefined;
+          }
+          // If real children exist now, delegate to them
+          if (children && children.has(key)) {
+            return children.get(key)!.get();
+          }
+          return (parentValue as Record<string, unknown>)[key];
+        },
+        set: (value: unknown) => {
+          const parentValue = subject$.getValue();
+          if (parentValue === null || parentValue === undefined) {
+            // Can't set on null parent - this is a no-op
+            return;
+          }
+          // If real children exist, delegate to them
+          if (children && children.has(key)) {
+            children.get(key)!.set(value);
+            return;
+          }
+          // Otherwise update the parent directly
+          const newParent = { ...(parentValue as object), [key]: value };
+          subject$.next(newParent as T);
+        },
+        _subscribeToRealChild: () => {
+          // Called when real children are created to subscribe to child changes
+          if (children && children.has(key) && !realChildSubscription) {
+            realChildSubscription = children.get(key)!.$.subscribe((value) => {
+              pendingSubject$.next(value);
+            });
+          }
+        },
+      };
+      
+      pendingChildren.set(key, pendingNode);
+      return pendingNode;
     },
     
     isNull: () => {
@@ -944,14 +1096,11 @@ function wrapNullableWithProxy<T>(node: NullableNodeCore<T>): RxNullable<T> {
         return () => node.$;
       }
 
-      // Child property access - returns undefined if null
+      // Child property access - uses getOrCreateChild for deep subscription support
+      // This means store.user.age.subscribe() works even when user is null
       if (typeof prop === "string") {
-        const child = node.getChild(prop);
-        if (child) {
-          return wrapWithProxy(child);
-        }
-        // Return undefined if value is null or child doesn't exist
-        return undefined;
+        const child = node.getOrCreateChild(prop);
+        return wrapWithProxy(child);
       }
 
       // Fallback to observable properties
