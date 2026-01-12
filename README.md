@@ -286,20 +286,6 @@ This gives you **O(depth) performance** per change:
 - Sibling properties like `store.x.y.z` are never touched
 - Compare to O(subscribers) in single-observable architectures
 
-## V1 vs V2
-
-deepstate exports V2 by default. V1 is available as an alternate implementation:
-
-```ts
-// V2 (default) - nested BehaviorSubjects, O(depth) per change
-import { state } from "deepstate";
-
-// V1 - single BehaviorSubject, O(subscribers) per change
-import { stateV1 } from "deepstate";
-```
-
-V2 is recommended for most use cases due to better performance with deep state trees.
-
 ## TypeScript
 
 deepstate is fully typed. Types are inferred from your initial state:
@@ -324,11 +310,10 @@ import type { RxState, Draft, DeepReadonly } from "deepstate";
 
 | Export | Description |
 |--------|-------------|
-| `state(init)` | Create reactive state (V2) |
+| `state(init)` | Create reactive state |
 | `nullable(value)` | Mark object as nullable |
 | `select(...obs)` | Combine observables |
 | `selectFromEach(arr, selector)` | Select from array items |
-| `stateV1(init)` | V1 implementation |
 
 ### Node Types
 

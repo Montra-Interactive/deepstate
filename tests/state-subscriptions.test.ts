@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { state } from '../src/deepstate-v2';
+import { state } from '../src';
 
 describe('subscriptions', () => {
   describe('basic subscription', () => {

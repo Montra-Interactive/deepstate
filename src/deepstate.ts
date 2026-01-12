@@ -1,11 +1,47 @@
-import { BehaviorSubject, Observable, Subscription } from "rxjs";
-import { distinctUntilChanged, map, take } from "rxjs/operators";
+/**
+ * deepstate v2 - Nested BehaviorSubjects Architecture
+ *
+ * Each property has its own observable that emits standalone.
+ * Parent notifications flow upward automatically via RxJS subscriptions.
+ * Siblings are never notified.
+ *
+ * Architecture:
+ * - Leaves (primitives): BehaviorSubject is source of truth
+ * - Objects: combineLatest(children) derives the observable, children are source of truth
+ * - Arrays: BehaviorSubject<T[]> is source of truth, children are projections
+ */
 
-// Symbols for internal access
-const PATH = Symbol("path");
-const ROOT = Symbol("root");
+import { BehaviorSubject, Observable, combineLatest, of, Subscription } from "rxjs";
+import {
+  map,
+  distinctUntilChanged,
+  shareReplay,
+  take,
+  filter,
+} from "rxjs/operators";
 
-// Deep freeze an object recursively
+// =============================================================================
+// Counters for performance comparison
+// =============================================================================
+
+export let distinctCallCount = 0;
+export function resetDistinctCallCount() {
+  distinctCallCount = 0;
+}
+
+// Wrap distinctUntilChanged to count calls
+function countedDistinctUntilChanged<T>(compareFn?: (a: T, b: T) => boolean) {
+  return distinctUntilChanged<T>((a, b) => {
+    distinctCallCount++;
+    if (compareFn) return compareFn(a, b);
+    return a === b;
+  });
+}
+
+// =============================================================================
+// Deep Freeze
+// =============================================================================
+
 function deepFreeze<T>(obj: T): T {
   if (obj === null || typeof obj !== "object") return obj;
   if (Object.isFrozen(obj)) return obj;
@@ -23,70 +59,37 @@ function deepFreeze<T>(obj: T): T {
   return obj;
 }
 
-// Counter for deepEqual calls (for performance comparison)
-export let deepEqualCallCount = 0;
-export function resetDeepEqualCallCount() {
-  deepEqualCallCount = 0;
-}
+// =============================================================================
+// Types
+// =============================================================================
 
-// Deep equality check for distinctUntilChanged
-function deepEqual(a: unknown, b: unknown): boolean {
-  deepEqualCallCount++;
-  if (a === b) return true;
-  if (a === null || b === null) return false;
-  if (typeof a !== "object" || typeof b !== "object") return false;
-
-  if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) return false;
-    return a.every((item, i) => deepEqual(item, b[i]));
-  }
-
-  if (Array.isArray(a) !== Array.isArray(b)) return false;
-
-  const keysA = Object.keys(a);
-  const keysB = Object.keys(b);
-  if (keysA.length !== keysB.length) return false;
-
-  return keysA.every((key) =>
-    deepEqual((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])
-  );
-}
-
-// Get value at path from object
-function getAtPath(obj: unknown, path: PropertyKey[]): unknown {
-  let current = obj;
-  for (const key of path) {
-    if (current === null || current === undefined) return undefined;
-    current = (current as Record<PropertyKey, unknown>)[key];
-  }
-  return current;
-}
-
-// Set value at path in object (immutably)
-function setAtPath<T>(obj: T, path: PropertyKey[], value: unknown): T {
-  if (path.length === 0) return value as T;
-
-  const [head, ...tail] = path;
-  const current = obj as Record<PropertyKey, unknown>;
-
-  if (Array.isArray(obj)) {
-    const newArr = [...obj];
-    newArr[head as number] = tail.length === 0 ? value : setAtPath(obj[head as number], tail, value);
-    return newArr as T;
-  }
-
-  return {
-    ...current,
-    [head as string]: tail.length === 0 ? value : setAtPath(current[head as string], tail, value),
-  } as T;
-}
-
-// Type helpers for nested state
 type Primitive = string | number | boolean | null | undefined | symbol | bigint;
 
-// Deep readonly type - makes all nested properties readonly
-// Using [T] extends [...] to prevent distribution over unions
-type DeepReadonly<T> = [T] extends [Primitive]
+// Type utilities for nullable object detection
+type NonNullablePart<T> = T extends null | undefined ? never : T;
+
+// Check if T includes null or undefined
+type HasNull<T> = null extends T ? true : false;
+type HasUndefined<T> = undefined extends T ? true : false;
+type IsNullish<T> = HasNull<T> extends true ? true : HasUndefined<T>;
+
+// Check if the non-nullable part is an object (but not array)
+type NonNullPartIsObject<T> = NonNullablePart<T> extends object
+  ? NonNullablePart<T> extends Array<unknown>
+    ? false
+    : true
+  : false;
+
+// A nullable object is: has null/undefined in union AND non-null part is an object
+type IsNullableObject<T> = IsNullish<T> extends true
+  ? NonNullPartIsObject<T>
+  : false;
+
+/**
+ * Deep readonly type - makes all nested properties readonly.
+ * Used for return types of get() and subscribe() to prevent accidental mutations.
+ */
+export type DeepReadonly<T> = [T] extends [Primitive]
   ? T
   : [T] extends [Array<infer U>]
     ? ReadonlyArray<DeepReadonly<U>>
@@ -94,64 +97,77 @@ type DeepReadonly<T> = [T] extends [Primitive]
       ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
       : T;
 
-// NonNullable part of T for determining node type
-type NonNullablePart<T> = T extends null | undefined ? never : T;
-
 /**
- * A mutable draft of state T.
- * 
- * Mutate this object freely within an `update()` callback.
- * Changes are automatically committed when the callback completes,
- * triggering a single emission to subscribers.
- * 
- * @example
- * ```ts
- * myState.user.update((draft) => {
- *   draft.name = "Alice";      // mutate freely
- *   draft.profile.age = 30;    // nested mutations work too
- * }); // auto-committed here, single emission
- * ```
+ * A mutable draft of state T for use in update callbacks.
  */
 export type Draft<T> = T;
 
-// RxNode type - using [T] extends [...] to prevent distribution over unions
-// This ensures { name: string } | null becomes a single RxObject with nullable set()
-// rather than RxObject | RxLeaf union
-type RxNode<T, TRoot> = [T] extends [Primitive]
-  ? RxLeaf<T, TRoot>
-  : [NonNullablePart<T>] extends [Array<infer U>]
-    ? RxArray<U, TRoot, T>
-    : [NonNullablePart<T>] extends [object]
-      ? RxObject<NonNullablePart<T>, TRoot, T>
-      : RxLeaf<T, TRoot>;
+// Internal node interface - what every node must implement
+interface NodeCore<T> {
+  readonly $: Observable<T>;
+  get(): T;
+  set(value: T): void;
+  subscribeOnce?(callback: (value: T) => void): Subscription;
+}
 
-type RxLeaf<T, TRoot> = Observable<DeepReadonly<T>> & {
+// Symbols for internal access
+const NODE = Symbol("node");
+
+// External API types
+type RxLeaf<T> = Observable<DeepReadonly<T>> & {
   /** Get current value synchronously */
   get(): DeepReadonly<T>;
   /** Set value */
   set(value: T): void;
   /** Subscribe to a single emission, then automatically unsubscribe */
   subscribeOnce(callback: (value: DeepReadonly<T>) => void): Subscription;
-  [ROOT]: BehaviorSubject<TRoot>;
-  [PATH]: PropertyKey[];
+  [NODE]: NodeCore<T>;
 };
 
-// TFull is the full type including null/undefined, T is the array element type
-type RxArray<T, TRoot, TFull = T[]> = Observable<DeepReadonly<TFull>> & {
+type RxObject<T extends object> = {
+  [K in keyof T]: RxNodeFor<T[K]>;
+} & Observable<DeepReadonly<T>> & {
   /** Get current value synchronously */
-  get(): DeepReadonly<TFull>;
+  get(): DeepReadonly<T>;
   /** Set value */
-  set(value: TFull): void;
-  /** Subscribe to a single emission, then automatically unsubscribe */
-  subscribeOnce(callback: (value: DeepReadonly<TFull>) => void): Subscription;
-  /**
-   * Update using a mutable draft. Mutate the draft freely - changes are
-   * automatically committed when the callback completes, triggering a single emission.
+  set(value: T): void;
+  /** 
+   * Update multiple properties in a single emission.
+   * The callback receives the reactive state object - use .set() on properties to update them.
+   * All changes are batched into a single emission.
+   * @example
+   * store.user.update(draft => {
+   *   draft.name.set("Bob");
+   *   draft.age.set(31);
+   * });
    */
-  update(callback: (draft: Draft<T[]>) => void): DeepReadonly<TFull>;
+  update(callback: (draft: RxObject<T>) => void): DeepReadonly<T>;
+  /** Subscribe to a single emission, then automatically unsubscribe */
+  subscribeOnce(callback: (value: DeepReadonly<T>) => void): Subscription;
+  [NODE]: NodeCore<T>;
+};
+
+type RxArray<T> = Observable<DeepReadonly<T[]>> & {
+  /** Get current value synchronously */
+  get(): DeepReadonly<T[]>;
+  /** Set value */
+  set(value: T[]): void;
+  /** 
+   * Update array in a single emission.
+   * The callback receives the reactive array - use .at(), .push(), .pop() etc to update.
+   * All changes are batched into a single emission.
+   * @example
+   * store.items.update(draft => {
+   *   draft.at(0)?.name.set("Updated");
+   *   draft.push({ id: 2, name: "New" });
+   * });
+   */
+  update(callback: (draft: RxArray<T>) => void): DeepReadonly<T[]>;
+  /** Subscribe to a single emission, then automatically unsubscribe */
+  subscribeOnce(callback: (value: DeepReadonly<T[]>) => void): Subscription;
   /** Get reactive node for array element at index */
-  at(index: number): RxNode<T, TRoot> | undefined;
-  /** Get current length */
+  at(index: number): RxNodeFor<T> | undefined;
+  /** Get current length (also observable) */
   length: Observable<number> & { get(): number };
   /** Push items and return new length */
   push(...items: T[]): number;
@@ -160,184 +176,1013 @@ type RxArray<T, TRoot, TFull = T[]> = Observable<DeepReadonly<TFull>> & {
   /** Map over current values (non-reactive, use .subscribe for reactive) */
   map<U>(fn: (item: DeepReadonly<T>, index: number) => U): U[];
   /** Filter current values */
-  filter(fn: (item: DeepReadonly<T>, index: number) => boolean): ReadonlyArray<DeepReadonly<T>>;
-  [ROOT]: BehaviorSubject<TRoot>;
-  [PATH]: PropertyKey[];
+  filter(fn: (item: DeepReadonly<T>, index: number) => boolean): DeepReadonly<T>[];
+  [NODE]: NodeCore<T[]>;
 };
 
-// TFull is the full type including null/undefined, T is the non-nullable object type
-type RxObject<T extends object, TRoot, TFull = T> = {
-  [K in keyof T]: RxNode<T[K], TRoot>;
-} & Observable<DeepReadonly<TFull>> & {
-  /** Get current value synchronously */
-  get(): DeepReadonly<TFull>;
-  /** Set value */
-  set(value: TFull): void;
-  subscribe: Observable<DeepReadonly<TFull>>["subscribe"];
+/**
+ * RxNullable - For properties typed as `{ ... } | null` or `{ ... } | undefined`
+ * 
+ * Access requires optional chaining since the underlying value may be null.
+ * The node is always present at runtime, but TypeScript enforces ?. to remind
+ * you that the value might be null.
+ * 
+ * @example
+ * const store = state<{ user: { name: string } | null }>({ user: null });
+ * store.user?.get();             // null - need ?. because value might be null
+ * store.user?.set({ name: "Alice" }); // need ?.
+ * store.user?.name.get();        // "Alice" - after ?. on user, children are accessible
+ * store.user?.name.set("Bob");   // works after ?.
+ */
+type RxNullableInner<T, TNonNull extends object> = Observable<DeepReadonly<T>> & {
+  /** Get current value (may be null/undefined) */
+  get(): DeepReadonly<T>;
+  /** Set value (can be null/undefined or the full object) */
+  set(value: T): void;
   /** Subscribe to a single emission, then automatically unsubscribe */
-  subscribeOnce(callback: (value: DeepReadonly<TFull>) => void): Subscription;
+  subscribeOnce(callback: (value: DeepReadonly<T>) => void): Subscription;
   /**
-   * Update using a mutable draft. Mutate the draft freely - changes are
-   * automatically committed when the callback completes, triggering a single emission.
+   * Update when non-null. Callback only runs if value is not null/undefined.
+   * @example
+   * store.user?.updateIfPresent(user => {
+   *   user.name.set("Bob");
+   *   user.age.set(31);
+   * });
    */
-  update(callback: (draft: Draft<T>) => void): DeepReadonly<TFull>;
-  [ROOT]: BehaviorSubject<TRoot>;
-  [PATH]: PropertyKey[];
+  updateIfPresent(callback: (draft: RxObject<TNonNull>) => void): DeepReadonly<T>;
+  [NODE]: NodeCore<T>;
+} & {
+  /** Child properties - accessible after optional chaining on parent */
+  [K in keyof TNonNull]: RxNodeFor<TNonNull[K]>;
 };
 
-export type RxState<T extends object> = RxObject<T, T, T>;
+// RxNullable is typed as potentially undefined to enforce ?. access
+// At runtime the node always exists, but this enforces the mental model
+// that "user might be null, so use ?."
+type RxNullable<T, TNonNull extends object = NonNullablePart<T> & object> = 
+  RxNullableInner<T, TNonNull> | undefined;
 
-// Create a reactive node at a given path
-function createNode<T, TRoot>(
-  root$: BehaviorSubject<TRoot>,
-  path: PropertyKey[],
-  initialValue: T
-): RxNode<T, TRoot> {
-  // Create the observable for this path
-  const node$ = root$.pipe(
-    map((state) => deepFreeze(getAtPath(state, path)) as T),
-    distinctUntilChanged(deepEqual)
+type RxNodeFor<T> = 
+  // First: check for nullable object (e.g., { name: string } | null)
+  IsNullableObject<T> extends true
+    ? RxNullable<T>
+  // Then: primitives (including plain null/undefined)
+  : [T] extends [Primitive]
+    ? RxLeaf<T>
+  // Then: arrays
+  : [T] extends [Array<infer U>]
+    ? RxArray<U>
+  // Then: plain objects
+  : [T] extends [object]
+    ? RxObject<T>
+  // Fallback
+  : RxLeaf<T>;
+
+export type RxState<T extends object> = RxObject<T>;
+
+// =============================================================================
+// Node Creation
+// =============================================================================
+
+function createLeafNode<T extends Primitive>(value: T): NodeCore<T> {
+  const subject$ = new BehaviorSubject<T>(value);
+  
+  // Use distinctUntilChanged to prevent duplicate emissions for same value
+  const distinct$ = subject$.pipe(
+    distinctUntilChanged(),
+    shareReplay(1)
   );
+  // Keep hot
+  distinct$.subscribe();
 
-  // Cache for child nodes
-  const childCache = new Map<PropertyKey, unknown>();
-
-  const getChild = (key: PropertyKey): unknown => {
-    if (!childCache.has(key)) {
-      const currentValue = getAtPath(root$.getValue(), path) as Record<PropertyKey, unknown>;
-      const childValue = currentValue?.[key];
-      childCache.set(key, createNode(root$, [...path, key], childValue));
-    }
-    return childCache.get(key);
-  };
-
-  // Base methods for all nodes
-  const baseMethods = {
-    get: () => getAtPath(root$.getValue(), path) as T,
-    set: (value: T) => {
-      root$.next(setAtPath(root$.getValue(), path, value));
-    },
+  return {
+    $: distinct$,
+    get: () => subject$.getValue(),
+    set: (v: T) => subject$.next(v),
     subscribeOnce: (callback: (value: T) => void): Subscription => {
-      return node$.pipe(take(1)).subscribe(callback as (value: unknown) => void);
+      return distinct$.pipe(take(1)).subscribe(callback);
     },
-    update: (callback: (draft: T) => void): T => {
-      const draft = structuredClone(getAtPath(root$.getValue(), path)) as T;
-      callback(draft);
-      root$.next(setAtPath(root$.getValue(), path, draft));
-      return deepFreeze(draft) as T;
-    },
-    [ROOT]: root$,
-    [PATH]: path,
   };
-
-  // Check if value is an array
-  if (Array.isArray(initialValue)) {
-    const arrayMethods = {
-      at: (index: number) => getChild(index),
-      get length() {
-        const len$ = root$.pipe(
-          map((state) => (getAtPath(state, path) as unknown[])?.length ?? 0),
-          distinctUntilChanged()
-        );
-        return Object.assign(len$, {
-          get: () => (getAtPath(root$.getValue(), path) as unknown[])?.length ?? 0,
-        });
-      },
-      push: (...items: unknown[]) => {
-        const current = (getAtPath(root$.getValue(), path) as unknown[]) ?? [];
-        const newArr = [...current, ...items];
-        root$.next(setAtPath(root$.getValue(), path, newArr));
-        return newArr.length;
-      },
-      pop: () => {
-        const current = (getAtPath(root$.getValue(), path) as unknown[]) ?? [];
-        if (current.length === 0) return undefined;
-        const last = current[current.length - 1];
-        root$.next(setAtPath(root$.getValue(), path, current.slice(0, -1)));
-        return last;
-      },
-      map: <U>(fn: (item: unknown, index: number) => U): U[] => {
-        const current = (getAtPath(root$.getValue(), path) as unknown[]) ?? [];
-        return current.map(fn);
-      },
-      filter: (fn: (item: unknown, index: number) => boolean): unknown[] => {
-        const current = (getAtPath(root$.getValue(), path) as unknown[]) ?? [];
-        return current.filter(fn);
-      },
-    };
-
-    return Object.assign(node$, baseMethods, arrayMethods) as unknown as RxNode<T, TRoot>;
-  }
-
-  // Check if value is a plain object
-  if (initialValue !== null && typeof initialValue === "object") {
-    const objectProxy = new Proxy(node$ as object, {
-      get(_target, prop: PropertyKey) {
-        // Observable methods
-        if (prop === "subscribe") return node$.subscribe.bind(node$);
-        if (prop === "pipe") return node$.pipe.bind(node$);
-        if (prop === "forEach") return node$.forEach.bind(node$);
-
-        // Base methods
-        if (prop === "get") return baseMethods.get;
-        if (prop === "set") return baseMethods.set;
-        if (prop === "subscribeOnce") return baseMethods.subscribeOnce;
-        if (prop === "update") return baseMethods.update;
-        if (prop === ROOT) return root$;
-        if (prop === PATH) return path;
-
-        // Symbol.observable for RxJS interop
-        if (prop === Symbol.observable || prop === "@@observable") {
-          return () => node$;
-        }
-
-        // Child properties
-        const currentValue = getAtPath(root$.getValue(), path) as Record<PropertyKey, unknown>;
-        if (currentValue && prop in currentValue) {
-          return getChild(prop);
-        }
-
-        // Fallback to observable method
-        if (prop in node$) {
-          const val = (node$ as unknown as Record<PropertyKey, unknown>)[prop];
-          return typeof val === "function" ? val.bind(node$) : val;
-        }
-
-        return undefined;
-      },
-
-      has(_target, prop) {
-        const currentValue = getAtPath(root$.getValue(), path) as Record<PropertyKey, unknown>;
-        return (
-          prop in (currentValue ?? {}) ||
-          prop === "subscribe" ||
-          prop === "get" ||
-          prop === "set"
-        );
-      },
-
-      ownKeys() {
-        const currentValue = getAtPath(root$.getValue(), path) as Record<PropertyKey, unknown>;
-        return Object.keys(currentValue ?? {});
-      },
-
-      getOwnPropertyDescriptor(_target, prop) {
-        const currentValue = getAtPath(root$.getValue(), path) as Record<PropertyKey, unknown>;
-        if (currentValue && prop in currentValue) {
-          return { enumerable: true, configurable: true };
-        }
-        return undefined;
-      },
-    });
-
-    return objectProxy as RxNode<T, TRoot>;
-  }
-
-  // Primitive value - just return observable with base methods
-  return Object.assign(node$, baseMethods) as RxNode<T, TRoot>;
 }
 
+function createObjectNode<T extends object>(value: T): NodeCore<T> & { 
+  children: Map<string, NodeCore<unknown>>;
+  lock(): void;
+  unlock(): void;
+} {
+  const keys = Object.keys(value) as (keyof T)[];
+  const children = new Map<keyof T, NodeCore<unknown>>();
+
+  // Create child nodes for each property
+  // Pass maybeNullable: true so null values get NullableNodeCore
+  // which can be upgraded to objects later
+  for (const key of keys) {
+    children.set(key, createNodeForValue(value[key], true));
+  }
+
+  // Helper to get current value from children
+  const getCurrentValue = (): T => {
+    const result = {} as T;
+    for (const [key, child] of children) {
+      (result as Record<string, unknown>)[key as string] = child.get();
+    }
+    return result;
+  };
+
+  // Handle empty objects
+  if (keys.length === 0) {
+    const empty$ = of(value).pipe(shareReplay(1));
+    return {
+      $: empty$,
+      children: children as Map<string, NodeCore<unknown>>,
+      get: () => ({}) as T,
+      set: () => {}, // No-op for empty objects
+      lock: () => {}, // No-op for empty objects
+      unlock: () => {}, // No-op for empty objects
+    };
+  }
+
+  // Lock for batching updates - when false, emissions are filtered out
+  const lock$ = new BehaviorSubject<boolean>(true);
+
+  // Derive observable from children + lock using combineLatest
+  const childObservables = keys.map((key) => children.get(key)!.$);
+
+  const $ = combineLatest([...childObservables, lock$] as Observable<unknown>[]).pipe(
+    // Only emit when unlocked (lock is last element)
+    filter((values) => values[values.length - 1] === true),
+    // Remove lock value from output, reconstruct object
+    map((values) => {
+      const result = {} as T;
+      keys.forEach((key, i) => {
+        (result as Record<string, unknown>)[key as string] = values[i];
+      });
+      return result;
+    }),
+    shareReplay(1)
+  );
+
+  // Force subscription to make it hot (so emissions work even before external subscribers)
+  $.subscribe();
+
+  // Create a version that freezes on emission
+  const frozen$ = $.pipe(map(deepFreeze));
+
+  return {
+    $: frozen$,
+    children: children as Map<string, NodeCore<unknown>>,
+    get: () => deepFreeze(getCurrentValue()),
+    set: (v: T) => {
+      for (const [key, child] of children) {
+        child.set(v[key]);
+      }
+    },
+    lock: () => lock$.next(false),
+    unlock: () => lock$.next(true),
+    // Note: update() is implemented in wrapWithProxy since it needs the proxy reference
+    subscribeOnce: (callback: (value: T) => void): Subscription => {
+      return frozen$.pipe(take(1)).subscribe(callback);
+    },
+  };
+}
+
+function createArrayNode<T>(value: T[]): NodeCore<T[]> & {
+  at(index: number): NodeCore<T> | undefined;
+  childCache: Map<number, NodeCore<T>>;
+  length$: Observable<number> & { get(): number };
+  push(...items: T[]): number;
+  pop(): T | undefined;
+  mapItems<U>(fn: (item: T, index: number) => U): U[];
+  filterItems(fn: (item: T, index: number) => boolean): T[];
+  lock(): void;
+  unlock(): void;
+} {
+  const subject$ = new BehaviorSubject<T[]>([...value]);
+  const childCache = new Map<number, NodeCore<T>>();
+
+  const createChildProjection = (index: number): NodeCore<T> => {
+    const currentValue = subject$.getValue()[index];
+
+    // If the element is an object, we need nested access
+    // Create a "projection node" that reads/writes through the parent array
+    if (currentValue !== null && typeof currentValue === "object") {
+      return createArrayElementObjectNode(
+        subject$ as unknown as BehaviorSubject<unknown[]>,
+        index,
+        currentValue as object
+      ) as unknown as NodeCore<T>;
+    }
+
+    // Primitive element - simple projection
+    const element$ = subject$.pipe(
+      map((arr) => arr[index]),
+      countedDistinctUntilChanged(),
+      shareReplay(1)
+    );
+
+    // Force hot
+    element$.subscribe();
+
+    return {
+      $: element$ as Observable<T>,
+      get: () => subject$.getValue()[index] as T,
+      set: (v: T) => {
+        const arr = [...subject$.getValue()];
+        arr[index] = v;
+        subject$.next(arr);
+      },
+      subscribeOnce: (callback: (value: T) => void): Subscription => {
+        return element$.pipe(take(1)).subscribe(callback as (value: unknown) => void);
+      },
+    };
+  };
+
+  // Lock for batching updates - when false, emissions are filtered out
+  const lock$ = new BehaviorSubject<boolean>(true);
+
+  // Create observable that respects lock
+  const locked$ = combineLatest([subject$, lock$]).pipe(
+    filter(([_, unlocked]) => unlocked),
+    map(([arr, _]) => arr),
+    map(deepFreeze),
+    shareReplay(1)
+  );
+  locked$.subscribe(); // Keep hot
+
+  // Length observable (also respects lock)
+  const length$ = locked$.pipe(
+    map((arr) => arr.length),
+    distinctUntilChanged(),
+    shareReplay(1)
+  );
+  length$.subscribe(); // Keep hot
+
+  const lengthWithGet = Object.assign(length$, {
+    get: () => subject$.getValue().length,
+  });
+
+  return {
+    $: locked$ as Observable<T[]>,
+    childCache,
+    get: () => deepFreeze([...subject$.getValue()]) as T[],
+    set: (v: T[]) => {
+      // Clear child cache when array is replaced
+      childCache.clear();
+      subject$.next([...v]);
+    },
+    subscribeOnce: (callback: (value: T[]) => void): Subscription => {
+      return locked$.pipe(take(1)).subscribe(callback);
+    },
+    at: (index: number) => {
+      const arr = subject$.getValue();
+      if (index < 0 || index >= arr.length) return undefined;
+
+      if (!childCache.has(index)) {
+        childCache.set(index, createChildProjection(index));
+      }
+      return childCache.get(index);
+    },
+    length$: lengthWithGet,
+    push: (...items: T[]): number => {
+      const current = subject$.getValue();
+      const newArr = [...current, ...items];
+      subject$.next(newArr);
+      return newArr.length;
+    },
+    pop: (): T | undefined => {
+      const current = subject$.getValue();
+      if (current.length === 0) return undefined;
+      const last = current[current.length - 1];
+      // Clear cached node for popped index
+      childCache.delete(current.length - 1);
+      subject$.next(current.slice(0, -1));
+      return deepFreeze(last) as T;
+    },
+    mapItems: <U>(fn: (item: T, index: number) => U): U[] => {
+      return subject$.getValue().map((item, i) => fn(deepFreeze(item) as T, i));
+    },
+    filterItems: (fn: (item: T, index: number) => boolean): T[] => {
+      return deepFreeze(subject$.getValue().filter((item, i) => fn(deepFreeze(item) as T, i))) as T[];
+    },
+    lock: () => lock$.next(false),
+    unlock: () => lock$.next(true),
+    // Note: update() is implemented in wrapWithProxy since it needs the proxy reference
+  };
+}
+
+// Symbol to mark nullable nodes
+const NULLABLE_NODE = Symbol("nullableNode");
+
+// Interface for nullable object nodes
+interface NullableNodeCore<T> extends NodeCore<T> {
+  [NULLABLE_NODE]: true;
+  children: Map<string, NodeCore<unknown>> | null;
+  getChild(key: string): NodeCore<unknown> | undefined;
+  lock(): void;
+  unlock(): void;
+  isNull(): boolean;
+}
+
+/**
+ * Creates a node for nullable object types like `{ name: string } | null`
+ * 
+ * When value is null: no children exist, child access returns undefined
+ * When value is set to object: children are created lazily from the object's keys
+ */
+function createNullableObjectNode<T>(
+  initialValue: T
+): NullableNodeCore<T> {
+  // Subject holds the raw value (null or object)
+  const subject$ = new BehaviorSubject<T>(initialValue);
+  
+  // Children are created lazily when we have an actual object
+  let children: Map<string, NodeCore<unknown>> | null = null;
+  
+  // Lock for batching updates
+  const lock$ = new BehaviorSubject<boolean>(true);
+  
+  // Build/rebuild children from an object value
+  const buildChildren = (obj: object) => {
+    const keys = Object.keys(obj);
+    children = new Map();
+    
+    for (const key of keys) {
+      children.set(key, createNodeForValue((obj as Record<string, unknown>)[key]));
+    }
+  };
+  
+  // Initialize children if starting with an object
+  if (initialValue !== null && initialValue !== undefined && typeof initialValue === "object") {
+    buildChildren(initialValue);
+  }
+  
+  // Helper to get current value
+  const getCurrentValue = (): T => {
+    const raw = subject$.getValue();
+    if (raw === null || raw === undefined || !children) {
+      return raw;
+    }
+    // Build value from children
+    const result = {} as Record<string, unknown>;
+    for (const [key, child] of children) {
+      result[key] = child.get();
+    }
+    return result as T;
+  };
+  
+  // Observable that emits the current value, respecting lock
+  const $ = combineLatest([subject$, lock$]).pipe(
+    filter(([_, unlocked]) => unlocked),
+    map(([value, _]) => {
+      if (value === null || value === undefined || !children) {
+        return value;
+      }
+      // Build from children for consistency
+      const result = {} as Record<string, unknown>;
+      for (const [key, child] of children) {
+        result[key] = child.get();
+      }
+      return result as T;
+    }),
+    distinctUntilChanged((a, b) => {
+      if (a === null || a === undefined) return a === b;
+      if (b === null || b === undefined) return false;
+      return JSON.stringify(a) === JSON.stringify(b);
+    }),
+    map(deepFreeze),
+    shareReplay(1)
+  );
+  $.subscribe(); // Keep hot
+  
+  // Create a stable reference object that we can update
+  const nodeState: { children: Map<string, NodeCore<unknown>> | null } = { children };
+  
+  // Wrapper to update the children reference
+  const updateChildrenRef = () => {
+    nodeState.children = children;
+  };
+  
+  // Override buildChildren to update the reference
+  const originalBuildChildren = buildChildren;
+  const buildChildrenAndUpdate = (obj: object) => {
+    const keys = Object.keys(obj);
+    children = new Map();
+    
+    for (const key of keys) {
+      // Pass maybeNullable: true so nested nulls also become nullable nodes
+      children.set(key, createNodeForValue((obj as Record<string, unknown>)[key], true));
+    }
+    updateChildrenRef();
+  };
+  
+  // Re-initialize if starting with object (using updated builder)
+  if (initialValue !== null && initialValue !== undefined && typeof initialValue === "object") {
+    children = null; // Reset
+    buildChildrenAndUpdate(initialValue);
+  }
+  
+  return {
+    [NULLABLE_NODE]: true as const,
+    $,
+    get children() { return nodeState.children; },
+    
+    get: () => deepFreeze(getCurrentValue()),
+    
+    set: (value: T) => {
+      if (value === null || value === undefined) {
+        // Setting to null - keep children structure for potential reuse but emit null
+        subject$.next(value);
+      } else if (typeof value === "object") {
+        // Setting to object
+        if (!children) {
+          // First time setting an object - create children
+          buildChildrenAndUpdate(value);
+        } else {
+          // Update existing children + handle new/removed keys
+          const newKeys = new Set(Object.keys(value));
+          const existingKeys = new Set(children.keys());
+          
+          // Update existing children
+          for (const [key, child] of children) {
+            if (newKeys.has(key)) {
+              child.set((value as Record<string, unknown>)[key]);
+            }
+          }
+          
+          // Add new keys
+          for (const key of newKeys) {
+            if (!existingKeys.has(key)) {
+              children.set(key, createNodeForValue((value as Record<string, unknown>)[key], true));
+            }
+          }
+          
+          // Note: We don't remove keys that are no longer present
+          // This maintains reactivity for subscribers to those keys
+        }
+        subject$.next(value);
+      }
+    },
+    
+    getChild: (key: string) => {
+      // Return undefined if null or no children
+      const value = subject$.getValue();
+      if (value === null || value === undefined || !children) {
+        return undefined;
+      }
+      return children.get(key);
+    },
+    
+    isNull: () => {
+      const value = subject$.getValue();
+      return value === null || value === undefined;
+    },
+    
+    lock: () => lock$.next(false),
+    unlock: () => lock$.next(true),
+    
+    subscribeOnce: (callback: (value: T) => void): Subscription => {
+      return $.pipe(take(1)).subscribe(callback);
+    },
+  };
+}
+
+// Type guard for nullable nodes
+function isNullableNode<T>(node: NodeCore<T>): node is NullableNodeCore<T> {
+  return NULLABLE_NODE in node;
+}
+
+// Special node for object elements within arrays
+// These project from the parent array but support nested property access
+function createArrayElementObjectNode<T extends object>(
+  parentArray$: BehaviorSubject<unknown[]>,
+  index: number,
+  initialValue: T
+): NodeCore<T> & { children: Map<string, NodeCore<unknown>> } {
+  const keys = Object.keys(initialValue) as (keyof T)[];
+  const children = new Map<string, NodeCore<unknown>>();
+
+  // Create child nodes that project through the array
+  for (const key of keys) {
+    children.set(
+      key as string,
+      createArrayElementPropertyNode(parentArray$, index, key as string, initialValue[key])
+    );
+  }
+
+  // Handle empty objects
+  if (keys.length === 0) {
+    const element$ = parentArray$.pipe(
+      map((arr) => arr[index] as T),
+      countedDistinctUntilChanged(),
+      shareReplay(1)
+    );
+    element$.subscribe();
+
+    return {
+      $: element$,
+      children,
+      get: () => parentArray$.getValue()[index] as T,
+      set: (v: T) => {
+        const arr = [...parentArray$.getValue()];
+        arr[index] = v;
+        parentArray$.next(arr);
+      },
+    };
+  }
+
+  // Derive from children
+  const childObservables = keys.map((key) => children.get(key as string)!.$);
+
+  const $ = combineLatest(childObservables).pipe(
+    map((values) => {
+      const result = {} as T;
+      keys.forEach((key, i) => {
+        (result as Record<string, unknown>)[key as string] = values[i];
+      });
+      return result;
+    }),
+    countedDistinctUntilChanged((a, b) => JSON.stringify(a) === JSON.stringify(b)),
+    shareReplay(1)
+  );
+
+  $.subscribe();
+
+  return {
+    $,
+    children,
+    get: () => {
+      const result = {} as T;
+      for (const [key, child] of children) {
+        (result as Record<string, unknown>)[key] = child.get();
+      }
+      return result;
+    },
+    set: (v: T) => {
+      // Update parent array directly
+      const arr = [...parentArray$.getValue()];
+      arr[index] = v;
+      parentArray$.next(arr);
+      // Note: This causes children to be out of sync until they re-read from parent
+      // For simplicity, we update children too
+      for (const [key, child] of children) {
+        child.set((v as Record<string, unknown>)[key]);
+      }
+    },
+  };
+}
+
+// Node for a property of an object inside an array
+function createArrayElementPropertyNode<T>(
+  parentArray$: BehaviorSubject<unknown[]>,
+  index: number,
+  key: string,
+  initialValue: T
+): NodeCore<T> {
+  // If nested object/array, recurse
+  if (initialValue !== null && typeof initialValue === "object") {
+    if (Array.isArray(initialValue)) {
+      // Nested array inside array element - create projection
+      return createNestedArrayProjection(parentArray$, index, key, initialValue) as unknown as NodeCore<T>;
+    }
+    // Nested object inside array element
+    return createNestedObjectProjection(parentArray$, index, key, initialValue as object) as unknown as NodeCore<T>;
+  }
+
+  // Primitive property
+  const prop$ = parentArray$.pipe(
+    map((arr) => (arr[index] as Record<string, unknown>)?.[key] as T),
+    countedDistinctUntilChanged(),
+    shareReplay(1)
+  );
+
+  prop$.subscribe();
+
+  return {
+    $: prop$,
+    get: () => {
+      const arr = parentArray$.getValue();
+      return (arr[index] as Record<string, unknown>)?.[key] as T;
+    },
+    set: (v: T) => {
+      const arr = [...parentArray$.getValue()];
+      arr[index] = { ...(arr[index] as object), [key]: v };
+      parentArray$.next(arr);
+    },
+  };
+}
+
+// Nested object projection (object property inside array element)
+function createNestedObjectProjection<T extends object>(
+  parentArray$: BehaviorSubject<unknown[]>,
+  index: number,
+  key: string,
+  initialValue: T
+): NodeCore<T> & { children: Map<string, NodeCore<unknown>> } {
+  const keys = Object.keys(initialValue) as (keyof T)[];
+  const children = new Map<string, NodeCore<unknown>>();
+
+  // For each property of the nested object
+  for (const nestedKey of keys) {
+    const nestedInitial = initialValue[nestedKey];
+
+    // Create a projection for this nested property
+    const nested$ = parentArray$.pipe(
+      map((arr) => {
+        const element = arr[index] as Record<string, unknown>;
+        const obj = element?.[key] as Record<string, unknown>;
+        return obj?.[nestedKey as string];
+      }),
+      countedDistinctUntilChanged(),
+      shareReplay(1)
+    );
+    nested$.subscribe();
+
+    children.set(nestedKey as string, {
+      $: nested$,
+      get: () => {
+        const arr = parentArray$.getValue();
+        const element = arr[index] as Record<string, unknown>;
+        const obj = element?.[key] as Record<string, unknown>;
+        return obj?.[nestedKey as string];
+      },
+      set: (v: unknown) => {
+        const arr = [...parentArray$.getValue()];
+        const element = { ...(arr[index] as object) } as Record<string, unknown>;
+        element[key] = { ...(element[key] as object), [nestedKey as string]: v };
+        arr[index] = element;
+        parentArray$.next(arr);
+      },
+    });
+  }
+
+  // Derive observable from children or parent
+  const obj$ = parentArray$.pipe(
+    map((arr) => (arr[index] as Record<string, unknown>)?.[key] as T),
+    countedDistinctUntilChanged((a, b) => JSON.stringify(a) === JSON.stringify(b)),
+    shareReplay(1)
+  );
+  obj$.subscribe();
+
+  return {
+    $: obj$,
+    children,
+    get: () => {
+      const arr = parentArray$.getValue();
+      return (arr[index] as Record<string, unknown>)?.[key] as T;
+    },
+    set: (v: T) => {
+      const arr = [...parentArray$.getValue()];
+      arr[index] = { ...(arr[index] as object), [key]: v };
+      parentArray$.next(arr);
+    },
+  };
+}
+
+// Nested array projection (array property inside array element)
+function createNestedArrayProjection<T>(
+  parentArray$: BehaviorSubject<unknown[]>,
+  index: number,
+  key: string,
+  initialValue: T[]
+): NodeCore<T[]> {
+  const arr$ = parentArray$.pipe(
+    map((arr) => (arr[index] as Record<string, unknown>)?.[key] as T[]),
+    countedDistinctUntilChanged((a, b) => JSON.stringify(a) === JSON.stringify(b)),
+    shareReplay(1)
+  );
+  arr$.subscribe();
+
+  return {
+    $: arr$,
+    get: () => {
+      const arr = parentArray$.getValue();
+      return (arr[index] as Record<string, unknown>)?.[key] as T[];
+    },
+    set: (v: T[]) => {
+      const arr = [...parentArray$.getValue()];
+      arr[index] = { ...(arr[index] as object), [key]: v };
+      parentArray$.next(arr);
+    },
+  };
+}
+
+// Factory to create the right node type
+// When maybeNullable is true and value is null/undefined, creates a NullableNodeCore
+// that can later be upgraded to an object with children
+function createNodeForValue<T>(value: T, maybeNullable: boolean = false): NodeCore<T> {
+  // Check for nullable marker (from nullable() helper)
+  if (isNullableMarked(value)) {
+    // Remove the marker before creating the node
+    delete (value as Record<symbol, unknown>)[NULLABLE_MARKER];
+    return createNullableObjectNode(value) as NodeCore<T>;
+  }
+  
+  if (value === null || value === undefined) {
+    if (maybeNullable) {
+      // Create nullable node that can be upgraded to object later
+      return createNullableObjectNode(value) as NodeCore<T>;
+    }
+    return createLeafNode(value as Primitive) as NodeCore<T>;
+  }
+  if (typeof value !== "object") {
+    return createLeafNode(value as Primitive) as NodeCore<T>;
+  }
+  if (Array.isArray(value)) {
+    return createArrayNode(value) as unknown as NodeCore<T>;
+  }
+  return createObjectNode(value as object) as unknown as NodeCore<T>;
+}
+
+// =============================================================================
+// Proxy Wrapper
+// =============================================================================
+
+/**
+ * Wraps a nullable object node with a proxy that:
+ * - Returns undefined for child property access when value is null
+ * - Creates/returns wrapped children when value is non-null
+ * - Provides updateIfPresent() for safe updates
+ */
+function wrapNullableWithProxy<T>(node: NullableNodeCore<T>): RxNullable<T> {
+  // Create updateIfPresent function
+  const updateIfPresent = (callback: (draft: object) => void): T => {
+    if (!node.isNull()) {
+      node.lock();
+      try {
+        // Build a proxy for the children
+        const childrenProxy = new Proxy({} as object, {
+          get(_, prop: PropertyKey) {
+            if (typeof prop === "string") {
+              const child = node.getChild(prop);
+              if (child) {
+                return wrapWithProxy(child);
+              }
+            }
+            return undefined;
+          },
+        });
+        callback(childrenProxy);
+      } finally {
+        node.unlock();
+      }
+    }
+    return node.get();
+  };
+
+  const proxy = new Proxy(node.$ as object, {
+    get(target, prop: PropertyKey) {
+      // Observable methods
+      if (prop === "subscribe") return node.$.subscribe.bind(node.$);
+      if (prop === "pipe") return node.$.pipe.bind(node.$);
+      if (prop === "forEach") return (node.$ as any).forEach?.bind(node.$);
+
+      // Node methods
+      if (prop === "get") return node.get;
+      if (prop === "set") return node.set;
+      if (prop === "updateIfPresent") return updateIfPresent;
+      if (prop === "subscribeOnce") return node.subscribeOnce;
+      if (prop === NODE) return node;
+
+      // Symbol.observable for RxJS interop
+      if (prop === Symbol.observable || prop === "@@observable") {
+        return () => node.$;
+      }
+
+      // Child property access - returns undefined if null
+      if (typeof prop === "string") {
+        const child = node.getChild(prop);
+        if (child) {
+          return wrapWithProxy(child);
+        }
+        // Return undefined if value is null or child doesn't exist
+        return undefined;
+      }
+
+      // Fallback to observable properties
+      if (prop in target) {
+        const val = (target as Record<PropertyKey, unknown>)[prop];
+        return typeof val === "function" ? val.bind(target) : val;
+      }
+
+      return undefined;
+    },
+
+    has(_, prop) {
+      // When value is non-null and we have children, check if prop exists
+      if (!node.isNull() && node.children && typeof prop === "string") {
+        return node.children.has(prop);
+      }
+      return false;
+    },
+
+    ownKeys() {
+      if (!node.isNull() && node.children) {
+        return Array.from(node.children.keys());
+      }
+      return [];
+    },
+
+    getOwnPropertyDescriptor(_, prop) {
+      if (!node.isNull() && node.children && typeof prop === "string" && node.children.has(prop)) {
+        return { enumerable: true, configurable: true };
+      }
+      return undefined;
+    },
+  });
+
+  return proxy as unknown as RxNullable<T>;
+}
+
+function wrapWithProxy<T>(node: NodeCore<T>): RxNodeFor<T> {
+  // Check for nullable node first (before checking value, since value might be null)
+  if (isNullableNode(node)) {
+    return wrapNullableWithProxy(node) as RxNodeFor<T>;
+  }
+
+  const value = node.get();
+
+  // Primitive - just attach methods to observable
+  if (value === null || typeof value !== "object") {
+    return Object.assign(node.$, {
+      get: node.get,
+      set: node.set,
+      subscribe: node.$.subscribe.bind(node.$),
+      pipe: node.$.pipe.bind(node.$),
+      subscribeOnce: node.subscribeOnce,
+      [NODE]: node,
+    }) as RxNodeFor<T>;
+  }
+
+  // Array
+  if (Array.isArray(value)) {
+    const arrayNode = node as unknown as NodeCore<unknown[]> & {
+      at(index: number): NodeCore<unknown> | undefined;
+      childCache: Map<number, NodeCore<unknown>>;
+      length$: Observable<number> & { get(): number };
+      push(...items: unknown[]): number;
+      pop(): unknown | undefined;
+      mapItems<U>(fn: (item: unknown, index: number) => U): U[];
+      filterItems(fn: (item: unknown, index: number) => boolean): unknown[];
+      lock(): void;
+      unlock(): void;
+    };
+
+    // Create the wrapped result first so we can reference it in update
+    const wrapped = Object.assign(node.$, {
+      get: node.get,
+      set: node.set,
+      subscribe: node.$.subscribe.bind(node.$),
+      pipe: node.$.pipe.bind(node.$),
+      subscribeOnce: node.subscribeOnce,
+      at: (index: number) => {
+        const child = arrayNode.at(index);
+        if (!child) return undefined;
+        return wrapWithProxy(child);
+      },
+      length: arrayNode.length$,
+      push: arrayNode.push,
+      pop: arrayNode.pop,
+      map: arrayNode.mapItems,
+      filter: arrayNode.filterItems,
+      update: (callback: (draft: unknown[]) => void): unknown[] => {
+        arrayNode.lock();  // Lock - suppress emissions
+        try {
+          callback(wrapped as unknown as unknown[]);  // Pass wrapped array so user can use .at(), .push(), etc.
+        } finally {
+          arrayNode.unlock();  // Unlock - emit final state
+        }
+        return node.get() as unknown[];
+      },
+      [NODE]: node,
+    });
+
+    return wrapped as unknown as RxNodeFor<T>;
+  }
+
+  // Object - use Proxy for property access
+  const objectNode = node as unknown as NodeCore<object> & {
+    children?: Map<string, NodeCore<unknown>>;
+    lock?(): void;
+    unlock?(): void;
+  };
+
+  // Create update function that has access to the proxy (defined after proxy creation)
+  let updateFn: ((callback: (draft: object) => void) => object) | undefined;
+
+  const proxy = new Proxy(node.$ as object, {
+    get(target, prop: PropertyKey) {
+      // Observable methods
+      if (prop === "subscribe") return node.$.subscribe.bind(node.$);
+      if (prop === "pipe") return node.$.pipe.bind(node.$);
+      if (prop === "forEach") return (node.$ as any).forEach?.bind(node.$);
+
+      // Node methods
+      if (prop === "get") return node.get;
+      if (prop === "set") return node.set;
+      if (prop === "update") return updateFn;
+      if (prop === "subscribeOnce") return node.subscribeOnce;
+      if (prop === NODE) return node;
+
+      // Symbol.observable for RxJS interop
+      if (prop === Symbol.observable || prop === "@@observable") {
+        return () => node.$;
+      }
+
+      // Child property access
+      if (objectNode.children && typeof prop === "string") {
+        const child = objectNode.children.get(prop);
+        if (child) {
+          return wrapWithProxy(child);
+        }
+      }
+
+      // Fallback to observable properties
+      if (prop in target) {
+        const val = (target as Record<PropertyKey, unknown>)[prop];
+        return typeof val === "function" ? val.bind(target) : val;
+      }
+
+      return undefined;
+    },
+
+    has(target, prop) {
+      if (objectNode.children && typeof prop === "string") {
+        return objectNode.children.has(prop);
+      }
+      return prop in target;
+    },
+
+    ownKeys() {
+      if (objectNode.children) {
+        return Array.from(objectNode.children.keys());
+      }
+      return [];
+    },
+
+    getOwnPropertyDescriptor(target, prop) {
+      if (objectNode.children && typeof prop === "string" && objectNode.children.has(prop)) {
+        return { enumerable: true, configurable: true };
+      }
+      return undefined;
+    },
+  });
+
+  // Now define update function with access to proxy
+  if (objectNode.lock && objectNode.unlock) {
+    updateFn = (callback: (draft: object) => void): object => {
+      objectNode.lock!();  // Lock - suppress emissions
+      try {
+        callback(proxy as object);  // Pass the proxy so user can call .set() on children
+      } finally {
+        objectNode.unlock!();  // Unlock - emit final state
+      }
+      return node.get() as object;
+    };
+  }
+
+  return proxy as RxNodeFor<T>;
+}
+
+// =============================================================================
+// Public API
+// =============================================================================
+
 export function state<T extends object>(initialState: T): RxState<T> {
-  const root$ = new BehaviorSubject<T>(structuredClone(initialState));
-  return createNode(root$, [], initialState) as RxState<T>;
+  const node = createObjectNode(initialState);
+  return wrapWithProxy(node as NodeCore<T>) as RxState<T>;
+}
+
+// Symbol to mark a value as nullable
+const NULLABLE_MARKER = Symbol("nullable");
+
+type NullableMarked<T> = T & { [NULLABLE_MARKER]: true };
+
+/**
+ * Marks a value as nullable, allowing it to transition between null and object.
+ * Use this when you want to start with an object value but later set it to null.
+ * 
+ * @example
+ * const store = state({
+ *   // Can start with object and later be set to null
+ *   user: nullable({ name: "Alice", age: 30 }),
+ *   // Can start with null and later be set to object  
+ *   profile: nullable<{ bio: string }>(null),
+ * });
+ * 
+ * // Use ?. on the nullable property, then access children directly
+ * store.user?.set(null);  // Works!
+ * store.user?.set({ name: "Bob", age: 25 });  // Works!
+ * store.user?.name.set("Charlie");  // After ?. on user, children are directly accessible
+ */
+export function nullable<T extends object>(value: T | null): T | null {
+  if (value === null) {
+    return null;
+  }
+  // Mark the object so createNodeForValue knows to use NullableNodeCore
+  return Object.assign(value, { [NULLABLE_MARKER]: true }) as T | null;
+}
+
+// Check if a value was marked as nullable
+function isNullableMarked<T>(value: T): boolean {
+  return value !== null && typeof value === "object" && NULLABLE_MARKER in value;
 }

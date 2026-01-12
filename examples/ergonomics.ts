@@ -1,11 +1,10 @@
 /**
- * Ergonomics Evaluation for deepstate V1
+ * Ergonomics Evaluation for deepstate
  * 
  * Testing common use cases to evaluate API feel and developer experience.
- * Note: This uses V1 which has the update() method for batched mutations.
  */
 
-import { stateV1 as state, select, selectFromEach } from "../src";
+import { state, select, selectFromEach } from "../src";
 import { map, filter, debounceTime, switchMap, take } from "rxjs/operators";
 import { combineLatest, of } from "rxjs";
 
@@ -120,11 +119,11 @@ const sub3 = appState.user.subscribe(() => emissions++);
 emissions = 0; // reset after initial emission
 
 // Multiple changes, single emission
-appState.user.update((draft) => {
-  draft.name = "Diana";
-  draft.email = "diana@example.com";
-  draft.preferences.theme = "light";
-  draft.preferences.notifications = false;
+appState.user.update((user) => {
+  user.name.set("Diana");
+  user.email.set("diana@example.com");
+  user.preferences.theme.set("light");
+  user.preferences.notifications.set(false);
 });
 
 console.log("Emissions after update() with 4 changes:", emissions, "(should be 1)");
@@ -157,10 +156,10 @@ const sub4 = appState.cart.items.at(0)?.name.subscribe((name) => {
 // Update specific item
 appState.cart.items.at(0)?.name.set("Super Widget");
 
-// Update item with draft
-appState.cart.items.at(0)?.update((draft) => {
-  draft.price = 12.99;
-  draft.qty = 3;
+// Update item with batched changes
+appState.cart.items.update((items) => {
+  items.at(0)?.price.set(12.99);
+  items.at(0)?.qty.set(3);
 });
 console.log("First item after update:", appState.cart.items.at(0)?.get());
 

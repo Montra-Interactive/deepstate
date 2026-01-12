@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { state } from '../src/deepstate-v2';
+import { state } from '../src';
 import { select, selectFromEach } from '../src/helpers';
 
 describe('helpers', () => {

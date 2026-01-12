@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { state, nullable } from '../src/deepstate-v2';
+import { state, nullable } from '../src';
 
 describe('nullable objects', () => {
   describe('basic nullable (starts null)', () => {
