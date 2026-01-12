@@ -65,6 +65,26 @@ function deepFreeze<T>(obj: T): T {
 
 type Primitive = string | number | boolean | null | undefined | symbol | bigint;
 
+// Type utilities for nullable object detection
+type NonNullablePart<T> = T extends null | undefined ? never : T;
+
+// Check if T includes null or undefined
+type HasNull<T> = null extends T ? true : false;
+type HasUndefined<T> = undefined extends T ? true : false;
+type IsNullish<T> = HasNull<T> extends true ? true : HasUndefined<T>;
+
+// Check if the non-nullable part is an object (but not array)
+type NonNullPartIsObject<T> = NonNullablePart<T> extends object
+  ? NonNullablePart<T> extends Array<unknown>
+    ? false
+    : true
+  : false;
+
+// A nullable object is: has null/undefined in union AND non-null part is an object
+type IsNullableObject<T> = IsNullish<T> extends true
+  ? NonNullPartIsObject<T>
+  : false;
+
 /**
  * Deep readonly type - makes all nested properties readonly.
  * Used for return types of get() and subscribe() to prevent accidental mutations.
@@ -160,13 +180,63 @@ type RxArray<T> = Observable<DeepReadonly<T[]>> & {
   [NODE]: NodeCore<T[]>;
 };
 
-type RxNodeFor<T> = [T] extends [Primitive]
-  ? RxLeaf<T>
+/**
+ * RxNullable - For properties typed as `{ ... } | null` or `{ ... } | undefined`
+ * 
+ * Access requires optional chaining since the underlying value may be null.
+ * The node is always present at runtime, but TypeScript enforces ?. to remind
+ * you that the value might be null.
+ * 
+ * @example
+ * const store = state<{ user: { name: string } | null }>({ user: null });
+ * store.user?.get();             // null - need ?. because value might be null
+ * store.user?.set({ name: "Alice" }); // need ?.
+ * store.user?.name.get();        // "Alice" - after ?. on user, children are accessible
+ * store.user?.name.set("Bob");   // works after ?.
+ */
+type RxNullableInner<T, TNonNull extends object> = Observable<DeepReadonly<T>> & {
+  /** Get current value (may be null/undefined) */
+  get(): DeepReadonly<T>;
+  /** Set value (can be null/undefined or the full object) */
+  set(value: T): void;
+  /** Subscribe to a single emission, then automatically unsubscribe */
+  subscribeOnce(callback: (value: DeepReadonly<T>) => void): Subscription;
+  /**
+   * Update when non-null. Callback only runs if value is not null/undefined.
+   * @example
+   * store.user?.updateIfPresent(user => {
+   *   user.name.set("Bob");
+   *   user.age.set(31);
+   * });
+   */
+  updateIfPresent(callback: (draft: RxObject<TNonNull>) => void): DeepReadonly<T>;
+  [NODE]: NodeCore<T>;
+} & {
+  /** Child properties - accessible after optional chaining on parent */
+  [K in keyof TNonNull]: RxNodeFor<TNonNull[K]>;
+};
+
+// RxNullable is typed as potentially undefined to enforce ?. access
+// At runtime the node always exists, but this enforces the mental model
+// that "user might be null, so use ?."
+type RxNullable<T, TNonNull extends object = NonNullablePart<T> & object> = 
+  RxNullableInner<T, TNonNull> | undefined;
+
+type RxNodeFor<T> = 
+  // First: check for nullable object (e.g., { name: string } | null)
+  IsNullableObject<T> extends true
+    ? RxNullable<T>
+  // Then: primitives (including plain null/undefined)
+  : [T] extends [Primitive]
+    ? RxLeaf<T>
+  // Then: arrays
   : [T] extends [Array<infer U>]
     ? RxArray<U>
-    : [T] extends [object]
-      ? RxObject<T>
-      : RxLeaf<T>;
+  // Then: plain objects
+  : [T] extends [object]
+    ? RxObject<T>
+  // Fallback
+  : RxLeaf<T>;
 
 export type RxState<T extends object> = RxObject<T>;
 
@@ -204,8 +274,10 @@ function createObjectNode<T extends object>(value: T): NodeCore<T> & {
   const children = new Map<keyof T, NodeCore<unknown>>();
 
   // Create child nodes for each property
+  // Pass maybeNullable: true so null values get NullableNodeCore
+  // which can be upgraded to objects later
   for (const key of keys) {
-    children.set(key, createNodeForValue(value[key]));
+    children.set(key, createNodeForValue(value[key], true));
   }
 
   // Helper to get current value from children
@@ -396,6 +468,187 @@ function createArrayNode<T>(value: T[]): NodeCore<T[]> & {
     unlock: () => lock$.next(true),
     // Note: update() is implemented in wrapWithProxy since it needs the proxy reference
   };
+}
+
+// Symbol to mark nullable nodes
+const NULLABLE_NODE = Symbol("nullableNode");
+
+// Interface for nullable object nodes
+interface NullableNodeCore<T> extends NodeCore<T> {
+  [NULLABLE_NODE]: true;
+  children: Map<string, NodeCore<unknown>> | null;
+  getChild(key: string): NodeCore<unknown> | undefined;
+  lock(): void;
+  unlock(): void;
+  isNull(): boolean;
+}
+
+/**
+ * Creates a node for nullable object types like `{ name: string } | null`
+ * 
+ * When value is null: no children exist, child access returns undefined
+ * When value is set to object: children are created lazily from the object's keys
+ */
+function createNullableObjectNode<T>(
+  initialValue: T
+): NullableNodeCore<T> {
+  // Subject holds the raw value (null or object)
+  const subject$ = new BehaviorSubject<T>(initialValue);
+  
+  // Children are created lazily when we have an actual object
+  let children: Map<string, NodeCore<unknown>> | null = null;
+  
+  // Lock for batching updates
+  const lock$ = new BehaviorSubject<boolean>(true);
+  
+  // Build/rebuild children from an object value
+  const buildChildren = (obj: object) => {
+    const keys = Object.keys(obj);
+    children = new Map();
+    
+    for (const key of keys) {
+      children.set(key, createNodeForValue((obj as Record<string, unknown>)[key]));
+    }
+  };
+  
+  // Initialize children if starting with an object
+  if (initialValue !== null && initialValue !== undefined && typeof initialValue === "object") {
+    buildChildren(initialValue);
+  }
+  
+  // Helper to get current value
+  const getCurrentValue = (): T => {
+    const raw = subject$.getValue();
+    if (raw === null || raw === undefined || !children) {
+      return raw;
+    }
+    // Build value from children
+    const result = {} as Record<string, unknown>;
+    for (const [key, child] of children) {
+      result[key] = child.get();
+    }
+    return result as T;
+  };
+  
+  // Observable that emits the current value, respecting lock
+  const $ = combineLatest([subject$, lock$]).pipe(
+    filter(([_, unlocked]) => unlocked),
+    map(([value, _]) => {
+      if (value === null || value === undefined || !children) {
+        return value;
+      }
+      // Build from children for consistency
+      const result = {} as Record<string, unknown>;
+      for (const [key, child] of children) {
+        result[key] = child.get();
+      }
+      return result as T;
+    }),
+    distinctUntilChanged((a, b) => {
+      if (a === null || a === undefined) return a === b;
+      if (b === null || b === undefined) return false;
+      return JSON.stringify(a) === JSON.stringify(b);
+    }),
+    map(deepFreeze),
+    shareReplay(1)
+  );
+  $.subscribe(); // Keep hot
+  
+  // Create a stable reference object that we can update
+  const nodeState: { children: Map<string, NodeCore<unknown>> | null } = { children };
+  
+  // Wrapper to update the children reference
+  const updateChildrenRef = () => {
+    nodeState.children = children;
+  };
+  
+  // Override buildChildren to update the reference
+  const originalBuildChildren = buildChildren;
+  const buildChildrenAndUpdate = (obj: object) => {
+    const keys = Object.keys(obj);
+    children = new Map();
+    
+    for (const key of keys) {
+      // Pass maybeNullable: true so nested nulls also become nullable nodes
+      children.set(key, createNodeForValue((obj as Record<string, unknown>)[key], true));
+    }
+    updateChildrenRef();
+  };
+  
+  // Re-initialize if starting with object (using updated builder)
+  if (initialValue !== null && initialValue !== undefined && typeof initialValue === "object") {
+    children = null; // Reset
+    buildChildrenAndUpdate(initialValue);
+  }
+  
+  return {
+    [NULLABLE_NODE]: true as const,
+    $,
+    get children() { return nodeState.children; },
+    
+    get: () => deepFreeze(getCurrentValue()),
+    
+    set: (value: T) => {
+      if (value === null || value === undefined) {
+        // Setting to null - keep children structure for potential reuse but emit null
+        subject$.next(value);
+      } else if (typeof value === "object") {
+        // Setting to object
+        if (!children) {
+          // First time setting an object - create children
+          buildChildrenAndUpdate(value);
+        } else {
+          // Update existing children + handle new/removed keys
+          const newKeys = new Set(Object.keys(value));
+          const existingKeys = new Set(children.keys());
+          
+          // Update existing children
+          for (const [key, child] of children) {
+            if (newKeys.has(key)) {
+              child.set((value as Record<string, unknown>)[key]);
+            }
+          }
+          
+          // Add new keys
+          for (const key of newKeys) {
+            if (!existingKeys.has(key)) {
+              children.set(key, createNodeForValue((value as Record<string, unknown>)[key], true));
+            }
+          }
+          
+          // Note: We don't remove keys that are no longer present
+          // This maintains reactivity for subscribers to those keys
+        }
+        subject$.next(value);
+      }
+    },
+    
+    getChild: (key: string) => {
+      // Return undefined if null or no children
+      const value = subject$.getValue();
+      if (value === null || value === undefined || !children) {
+        return undefined;
+      }
+      return children.get(key);
+    },
+    
+    isNull: () => {
+      const value = subject$.getValue();
+      return value === null || value === undefined;
+    },
+    
+    lock: () => lock$.next(false),
+    unlock: () => lock$.next(true),
+    
+    subscribeOnce: (callback: (value: T) => void): Subscription => {
+      return $.pipe(take(1)).subscribe(callback);
+    },
+  };
+}
+
+// Type guard for nullable nodes
+function isNullableNode<T>(node: NodeCore<T>): node is NullableNodeCore<T> {
+  return NULLABLE_NODE in node;
 }
 
 // Special node for object elements within arrays
@@ -614,8 +867,24 @@ function createNestedArrayProjection<T>(
 }
 
 // Factory to create the right node type
-function createNodeForValue<T>(value: T): NodeCore<T> {
-  if (value === null || typeof value !== "object") {
+// When maybeNullable is true and value is null/undefined, creates a NullableNodeCore
+// that can later be upgraded to an object with children
+function createNodeForValue<T>(value: T, maybeNullable: boolean = false): NodeCore<T> {
+  // Check for nullable marker (from nullable() helper)
+  if (isNullableMarked(value)) {
+    // Remove the marker before creating the node
+    delete (value as Record<symbol, unknown>)[NULLABLE_MARKER];
+    return createNullableObjectNode(value) as NodeCore<T>;
+  }
+  
+  if (value === null || value === undefined) {
+    if (maybeNullable) {
+      // Create nullable node that can be upgraded to object later
+      return createNullableObjectNode(value) as NodeCore<T>;
+    }
+    return createLeafNode(value as Primitive) as NodeCore<T>;
+  }
+  if (typeof value !== "object") {
     return createLeafNode(value as Primitive) as NodeCore<T>;
   }
   if (Array.isArray(value)) {
@@ -628,7 +897,108 @@ function createNodeForValue<T>(value: T): NodeCore<T> {
 // Proxy Wrapper
 // =============================================================================
 
+/**
+ * Wraps a nullable object node with a proxy that:
+ * - Returns undefined for child property access when value is null
+ * - Creates/returns wrapped children when value is non-null
+ * - Provides updateIfPresent() for safe updates
+ */
+function wrapNullableWithProxy<T>(node: NullableNodeCore<T>): RxNullable<T> {
+  // Create updateIfPresent function
+  const updateIfPresent = (callback: (draft: object) => void): T => {
+    if (!node.isNull()) {
+      node.lock();
+      try {
+        // Build a proxy for the children
+        const childrenProxy = new Proxy({} as object, {
+          get(_, prop: PropertyKey) {
+            if (typeof prop === "string") {
+              const child = node.getChild(prop);
+              if (child) {
+                return wrapWithProxy(child);
+              }
+            }
+            return undefined;
+          },
+        });
+        callback(childrenProxy);
+      } finally {
+        node.unlock();
+      }
+    }
+    return node.get();
+  };
+
+  const proxy = new Proxy(node.$ as object, {
+    get(target, prop: PropertyKey) {
+      // Observable methods
+      if (prop === "subscribe") return node.$.subscribe.bind(node.$);
+      if (prop === "pipe") return node.$.pipe.bind(node.$);
+      if (prop === "forEach") return (node.$ as any).forEach?.bind(node.$);
+
+      // Node methods
+      if (prop === "get") return node.get;
+      if (prop === "set") return node.set;
+      if (prop === "updateIfPresent") return updateIfPresent;
+      if (prop === "subscribeOnce") return node.subscribeOnce;
+      if (prop === NODE) return node;
+
+      // Symbol.observable for RxJS interop
+      if (prop === Symbol.observable || prop === "@@observable") {
+        return () => node.$;
+      }
+
+      // Child property access - returns undefined if null
+      if (typeof prop === "string") {
+        const child = node.getChild(prop);
+        if (child) {
+          return wrapWithProxy(child);
+        }
+        // Return undefined if value is null or child doesn't exist
+        return undefined;
+      }
+
+      // Fallback to observable properties
+      if (prop in target) {
+        const val = (target as Record<PropertyKey, unknown>)[prop];
+        return typeof val === "function" ? val.bind(target) : val;
+      }
+
+      return undefined;
+    },
+
+    has(_, prop) {
+      // When value is non-null and we have children, check if prop exists
+      if (!node.isNull() && node.children && typeof prop === "string") {
+        return node.children.has(prop);
+      }
+      return false;
+    },
+
+    ownKeys() {
+      if (!node.isNull() && node.children) {
+        return Array.from(node.children.keys());
+      }
+      return [];
+    },
+
+    getOwnPropertyDescriptor(_, prop) {
+      if (!node.isNull() && node.children && typeof prop === "string" && node.children.has(prop)) {
+        return { enumerable: true, configurable: true };
+      }
+      return undefined;
+    },
+  });
+
+  return proxy as unknown as RxNullable<T>;
+}
+
 function wrapWithProxy<T>(node: NodeCore<T>): RxNodeFor<T> {
+  // Check for nullable node first (before checking value, since value might be null)
+  if (isNullableNode(node)) {
+    return wrapNullableWithProxy(node) as RxNodeFor<T>;
+  }
+
   const value = node.get();
 
   // Primitive - just attach methods to observable
@@ -780,4 +1150,39 @@ function wrapWithProxy<T>(node: NodeCore<T>): RxNodeFor<T> {
 export function state<T extends object>(initialState: T): RxState<T> {
   const node = createObjectNode(initialState);
   return wrapWithProxy(node as NodeCore<T>) as RxState<T>;
+}
+
+// Symbol to mark a value as nullable
+const NULLABLE_MARKER = Symbol("nullable");
+
+type NullableMarked<T> = T & { [NULLABLE_MARKER]: true };
+
+/**
+ * Marks a value as nullable, allowing it to transition between null and object.
+ * Use this when you want to start with an object value but later set it to null.
+ * 
+ * @example
+ * const store = state({
+ *   // Can start with object and later be set to null
+ *   user: nullable({ name: "Alice", age: 30 }),
+ *   // Can start with null and later be set to object  
+ *   profile: nullable<{ bio: string }>(null),
+ * });
+ * 
+ * // Use ?. on the nullable property, then access children directly
+ * store.user?.set(null);  // Works!
+ * store.user?.set({ name: "Bob", age: 25 });  // Works!
+ * store.user?.name.set("Charlie");  // After ?. on user, children are directly accessible
+ */
+export function nullable<T extends object>(value: T | null): T | null {
+  if (value === null) {
+    return null;
+  }
+  // Mark the object so createNodeForValue knows to use NullableNodeCore
+  return Object.assign(value, { [NULLABLE_MARKER]: true }) as T | null;
+}
+
+// Check if a value was marked as nullable
+function isNullableMarked<T>(value: T): boolean {
+  return value !== null && typeof value === "object" && NULLABLE_MARKER in value;
 }

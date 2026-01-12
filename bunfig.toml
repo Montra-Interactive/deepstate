@@ -1,0 +1,7 @@
+[test]
+# Coverage configuration
+coverage = false
+coverageDir = "coverage"
+
+# Test timeout in milliseconds
+timeout = 5000

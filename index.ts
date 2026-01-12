@@ -39,29 +39,31 @@ console.log(`\nTotal emissions: ${emissions} (expected: 2)\n`);
 
 type NullableState = {
   user: { name: string; age: number } | null;
+  profile: { avatarUrl: string };
 };
 
 const nullableStore = state<NullableState>({
   user: null,
+  profile: { avatarUrl: "http://example.com/avatar.png" },
 });
 
 console.log("=== Nullable type Demo ===\n");
 
-nullableStore.user.subscribe(user => {
+nullableStore.user?.subscribe(user => {
   console.log(`User: ${user ? `${user.name}, ${user.age}` : "null"}`);
 });
 
 // Set the whole object
-nullableStore.user.set({ name: "Charlie", age: 25 });
+nullableStore.user?.set({ name: "Charlie", age: 25 });
 
 // For nullable types, you work with the whole object:
-const currentUser = nullableStore.user.get();
-if (currentUser !== null) {
+const currentUser = nullableStore.user?.get();
+if (!!currentUser) {
   // Update by getting current value and setting a new one
-  nullableStore.user.set({ ...currentUser, name: "Dave" });
+  nullableStore.user?.set({ ...currentUser, name: "Dave" });
 }
 
-console.log(`\nFinal user: ${JSON.stringify(nullableStore.user.get())}\n`);
+console.log(`\nFinal user: ${JSON.stringify(nullableStore.user?.get())}\n`);
 
 // =============================================================================
 // Example 3: Non-nullable nested object for when you need update()

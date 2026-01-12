@@ -3,6 +3,7 @@
  * 
  * Core exports (V2 - nested BehaviorSubjects, O(depth) performance):
  * - state() - Create reactive state from plain objects
+ * - nullable() - Mark a property as nullable (can transition between null and object)
  * - RxState, Draft - Type exports
  * 
  * V1 exports (single BehaviorSubject, O(subscribers) performance):
@@ -15,7 +16,7 @@
  */
 
 // V2 as default (nested BehaviorSubjects - O(depth) per change)
-export { state, type RxState, type Draft } from "./deepstate-v2";
+export { state, nullable, type RxState, type Draft } from "./deepstate-v2";
 
 // V1 available as alternate (single BehaviorSubject - O(subscribers) per change)
 export { 
