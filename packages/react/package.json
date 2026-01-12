@@ -1,0 +1,48 @@
+{
+  "name": "deepstate-react",
+  "version": "0.1.0",
+  "description": "React bindings for deepstate - Proxy-based reactive state management with RxJS.",
+  "keywords": [
+    "react",
+    "hooks",
+    "state",
+    "state-management",
+    "rxjs",
+    "reactive",
+    "observable",
+    "deepstate"
+  ],
+  "author": "Ronnie Magatti",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Montra-Interactive/deepstate",
+    "directory": "packages/react"
+  },
+  "module": "src/index.ts",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "peerDependencies": {
+    "react": "^18 || ^19",
+    "rxjs": "^7",
+    "deepstate": "^0.1.0"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.1",
+    "@types/jsdom": "^27.0.0",
+    "@types/react": "^19.2.8",
+    "deepstate": "workspace:*",
+    "jsdom": "^27.4.0",
+    "react": "^19.2.3"
+  }
+}
