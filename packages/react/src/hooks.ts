@@ -36,12 +36,14 @@ function hasGet<T>(obj: unknown): obj is NodeWithGet<T> {
 }
 
 function isObservable(obj: unknown): obj is Observable<unknown> {
-  return (
-    obj !== null &&
-    typeof obj === "object" &&
-    "subscribe" in obj &&
-    typeof (obj as Record<string, unknown>).subscribe === "function"
-  );
+  if (obj === null || typeof obj !== "object") return false;
+  // Check by accessing subscribe directly - works with proxied observables
+  // where "in" operator may not work correctly
+  try {
+    return typeof (obj as Record<string, unknown>).subscribe === "function";
+  } catch {
+    return false;
+  }
 }
 
 /**
