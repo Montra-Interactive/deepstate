@@ -32,7 +32,14 @@ interface NodeWithGet<T> {
 }
 
 function hasGet<T>(obj: unknown): obj is NodeWithGet<T> {
-  return obj !== null && typeof obj === "object" && "get" in obj && typeof (obj as NodeWithGet<T>).get === "function";
+  if (obj === null || typeof obj !== "object") return false;
+  // Check by accessing get directly - works with proxied observables
+  // where "in" operator may not work correctly
+  try {
+    return typeof (obj as NodeWithGet<T>).get === "function";
+  } catch {
+    return false;
+  }
 }
 
 function isObservable(obj: unknown): obj is Observable<unknown> {
