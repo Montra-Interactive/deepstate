@@ -81,7 +81,7 @@ describe("multi-node selection (combineLatest pattern)", () => {
   test("combining multiple nodes with array form", () => {
     const store = state({ completed: 3, total: 10 });
     
-    // Simulate what useSelector does internally with array form
+    // Simulate what useSelect does internally with array form
     const { combineLatest } = require("rxjs");
     const { map } = require("rxjs/operators");
     

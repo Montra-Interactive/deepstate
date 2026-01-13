@@ -6,26 +6,39 @@
  * @example
  * ```tsx
  * import { state } from 'deepstate';
- * import { useStateValue, useSelector } from 'deepstate-react';
+ * import { useSelect } from 'deepstate-react';
  *
  * const store = state({ user: { name: 'Alice', age: 30 }, count: 0 });
  *
+ * // Get raw value
  * function UserName() {
- *   const name = useStateValue(store.user.name);
+ *   const name = useSelect(store.user.name);
  *   return <span>{name}</span>;
  * }
  *
+ * // With selector
  * function UserSummary() {
- *   const summary = useSelector(store.user, user => `${user.name} (${user.age})`);
+ *   const summary = useSelect(store.user, user => `${user.name} (${user.age})`);
  *   return <span>{summary}</span>;
+ * }
+ *
+ * // Combine multiple nodes
+ * function Progress() {
+ *   const pct = useSelect(
+ *     [store.completed, store.total],
+ *     ([completed, total]) => total > 0 ? (completed / total) * 100 : 0
+ *   );
+ *   return <span>{pct}%</span>;
  * }
  * ```
  */
 
 export {
+  useSelect,
+  useObservable,
+  // Deprecated aliases for backwards compatibility
   useStateValue,
   useSelector,
-  useObservable,
 } from "./hooks";
 
 export type { Observable } from "rxjs";
