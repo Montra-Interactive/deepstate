@@ -405,6 +405,200 @@ describe('nullable objects', () => {
     });
   });
 
+  describe('primitive | null types', () => {
+    test('should handle string | null starting with null', () => {
+      type State = {
+        selectedId: string | null;
+      };
+
+      const store = state<State>({ selectedId: null });
+
+      expect(store.selectedId.get()).toBe(null);
+
+      store.selectedId.set('123');
+      expect(store.selectedId.get()).toBe('123');
+
+      store.selectedId.set('456');
+      expect(store.selectedId.get()).toBe('456');
+
+      store.selectedId.set(null);
+      expect(store.selectedId.get()).toBe(null);
+    });
+
+    test('should handle number | null starting with null', () => {
+      type State = {
+        count: number | null;
+      };
+
+      const store = state<State>({ count: null });
+
+      expect(store.count.get()).toBe(null);
+
+      store.count.set(42);
+      expect(store.count.get()).toBe(42);
+
+      store.count.set(0);
+      expect(store.count.get()).toBe(0);
+
+      store.count.set(null);
+      expect(store.count.get()).toBe(null);
+    });
+
+    test('should handle boolean | null starting with null', () => {
+      type State = {
+        isActive: boolean | null;
+      };
+
+      const store = state<State>({ isActive: null });
+
+      expect(store.isActive.get()).toBe(null);
+
+      store.isActive.set(true);
+      expect(store.isActive.get()).toBe(true);
+
+      store.isActive.set(false);
+      expect(store.isActive.get()).toBe(false);
+
+      store.isActive.set(null);
+      expect(store.isActive.get()).toBe(null);
+    });
+
+    test('should handle string | null starting with string', () => {
+      type State = {
+        selectedId: string | null;
+      };
+
+      const store = state<State>({ selectedId: '000' });
+
+      expect(store.selectedId.get()).toBe('000');
+
+      store.selectedId.set(null);
+      expect(store.selectedId.get()).toBe(null);
+
+      store.selectedId.set('123');
+      expect(store.selectedId.get()).toBe('123');
+    });
+
+    test('should emit values through subscriptions for primitive | null', () => {
+      type State = {
+        selectedId: string | null;
+      };
+
+      const store = state<State>({ selectedId: null });
+      const emissions: (string | null)[] = [];
+
+      store.selectedId.subscribe((val) => {
+        emissions.push(val);
+      });
+
+      store.selectedId.set('123');
+      store.selectedId.set('456');
+      store.selectedId.set(null);
+      store.selectedId.set('789');
+
+      expect(emissions).toEqual([null, '123', '456', null, '789']);
+    });
+
+    test('should handle multiple primitive | null properties', () => {
+      type State = {
+        name: string | null;
+        age: number | null;
+        isActive: boolean | null;
+      };
+
+      const store = state<State>({
+        name: null,
+        age: null,
+        isActive: null,
+      });
+
+      expect(store.get()).toEqual({
+        name: null,
+        age: null,
+        isActive: null,
+      });
+
+      store.name.set('Alice');
+      store.age.set(30);
+      store.isActive.set(true);
+
+      expect(store.get()).toEqual({
+        name: 'Alice',
+        age: 30,
+        isActive: true,
+      });
+    });
+
+    test('should handle primitive | null alongside object | null', () => {
+      type State = {
+        selectedSceneId: string | null;
+        error: { message: string; code: number } | null;
+      };
+
+      const store = state<State>({
+        selectedSceneId: null,
+        error: null,
+      });
+
+      store.selectedSceneId.set('scene-1');
+      store.error.set({ message: 'Something went wrong', code: 500 });
+
+      expect(store.get()).toEqual({
+        selectedSceneId: 'scene-1',
+        error: { message: 'Something went wrong', code: 500 },
+      });
+
+      store.selectedSceneId.set(null);
+      store.error.set(null);
+
+      expect(store.get()).toEqual({
+        selectedSceneId: null,
+        error: null,
+      });
+    });
+
+    test('should work in a realistic store scenario', () => {
+      type State = {
+        isPlaying: boolean;
+        currentSceneIndex: number;
+        selectedSceneId: string | null;
+        error: { message: string } | null;
+      };
+
+      const store = state<State>({
+        isPlaying: false,
+        currentSceneIndex: 0,
+        selectedSceneId: null,
+        error: null,
+      });
+
+      // Simulate playback starting
+      store.isPlaying.set(true);
+      store.selectedSceneId.set('scene-001');
+
+      expect(store.isPlaying.get()).toBe(true);
+      expect(store.selectedSceneId.get()).toBe('scene-001');
+
+      // Simulate scene change
+      store.currentSceneIndex.set(1);
+      store.selectedSceneId.set('scene-002');
+
+      expect(store.currentSceneIndex.get()).toBe(1);
+      expect(store.selectedSceneId.get()).toBe('scene-002');
+
+      // Simulate error
+      store.error.set({ message: 'Playback failed' });
+      store.isPlaying.set(false);
+
+      expect(store.error.get()).toEqual({ message: 'Playback failed' });
+      expect(store.isPlaying.get()).toBe(false);
+
+      // Clear error
+      store.error.set(null);
+      expect(store.error.get()).toBe(null);
+    });
+  });
+
   describe('non-nullable still works', () => {
     test('should work normally with non-nullable objects', () => {
       const store = state({

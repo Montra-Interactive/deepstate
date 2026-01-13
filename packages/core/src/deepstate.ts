@@ -29,6 +29,43 @@ export function resetDistinctCallCount() {
   distinctCallCount = 0;
 }
 
+// =============================================================================
+// Debug Context
+// =============================================================================
+
+interface DebugContext {
+  enabled: boolean;
+  storeName?: string;
+}
+
+function createDebugLog(ctx: DebugContext) {
+  return (path: string, action: string, oldValue: unknown, newValue: unknown) => {
+    if (!ctx.enabled) return;
+    
+    const prefix = ctx.storeName 
+      ? `[deepstate:${ctx.storeName}]` 
+      : '[deepstate]';
+    
+    const formatValue = (v: unknown): string => {
+      if (v === undefined) return 'undefined';
+      if (v === null) return 'null';
+      if (typeof v === 'object') {
+        try {
+          const str = JSON.stringify(v);
+          return str.length > 50 ? str.slice(0, 50) + '...' : str;
+        } catch {
+          return '[circular]';
+        }
+      }
+      return String(v);
+    };
+    
+    console.log(`${prefix} ${action} ${path}: ${formatValue(oldValue)} → ${formatValue(newValue)}`);
+  };
+}
+
+type DebugLogFn = ReturnType<typeof createDebugLog>;
+
 // Wrap distinctUntilChanged to count calls
 function countedDistinctUntilChanged<T>(compareFn?: (a: T, b: T) => boolean) {
   return distinctUntilChanged<T>((a, b) => {
@@ -682,6 +719,10 @@ function createNullableObjectNode<T>(
           // This maintains reactivity for subscribers to those keys
         }
         subject$.next(value);
+      } else {
+        // Setting to a primitive value (string, number, boolean, etc.)
+        // This handles cases like `string | null` where null was the initial value
+        subject$.next(value);
       }
     },
     
@@ -1053,7 +1094,14 @@ function createNodeForValue<T>(value: T, maybeNullable: boolean = false): NodeCo
  * - Creates/returns wrapped children when value is non-null
  * - Provides update() for batched updates
  */
-function wrapNullableWithProxy<T>(node: NullableNodeCore<T>): RxNullable<T> {
+function wrapNullableWithProxy<T>(node: NullableNodeCore<T>, path: string = '', debugLog?: DebugLogFn): RxNullable<T> {
+  // Create a wrapped set function that logs
+  const wrappedSet = (v: T) => {
+    const oldValue = node.get();
+    debugLog?.(path || 'root', 'set', oldValue, v);
+    node.set(v);
+  };
+
   // Create update function
   const update = (callback: (draft: object) => void): T => {
     node.lock();
@@ -1064,7 +1112,8 @@ function wrapNullableWithProxy<T>(node: NullableNodeCore<T>): RxNullable<T> {
           if (typeof prop === "string") {
             const child = node.getChild(prop);
             if (child) {
-              return wrapWithProxy(child);
+              const childPath = path ? `${path}.${prop}` : prop;
+              return wrapWithProxy(child, childPath, debugLog);
             }
           }
           return undefined;
@@ -1086,7 +1135,7 @@ function wrapNullableWithProxy<T>(node: NullableNodeCore<T>): RxNullable<T> {
 
       // Node methods
       if (prop === "get") return node.get;
-      if (prop === "set") return node.set;
+      if (prop === "set") return wrappedSet;
       if (prop === "update") return update;
       if (prop === "subscribeOnce") return node.subscribeOnce;
       if (prop === NODE) return node;
@@ -1100,7 +1149,8 @@ function wrapNullableWithProxy<T>(node: NullableNodeCore<T>): RxNullable<T> {
       // This means store.user.age.subscribe() works even when user is null
       if (typeof prop === "string") {
         const child = node.getOrCreateChild(prop);
-        return wrapWithProxy(child);
+        const childPath = path ? `${path}.${prop}` : prop;
+        return wrapWithProxy(child, childPath, debugLog);
       }
 
       // Fallback to observable properties
@@ -1138,19 +1188,26 @@ function wrapNullableWithProxy<T>(node: NullableNodeCore<T>): RxNullable<T> {
   return proxy as unknown as RxNullable<T>;
 }
 
-function wrapWithProxy<T>(node: NodeCore<T>): RxNodeFor<T> {
+function wrapWithProxy<T>(node: NodeCore<T>, path: string = '', debugLog?: DebugLogFn): RxNodeFor<T> {
   // Check for nullable node first (before checking value, since value might be null)
   if (isNullableNode(node)) {
-    return wrapNullableWithProxy(node) as RxNodeFor<T>;
+    return wrapNullableWithProxy(node, path, debugLog) as RxNodeFor<T>;
   }
 
   const value = node.get();
+  
+  // Create a wrapped set function that logs
+  const wrappedSet = (v: T) => {
+    const oldValue = node.get();
+    debugLog?.(path || 'root', 'set', oldValue, v);
+    node.set(v);
+  };
 
   // Primitive - just attach methods to observable
   if (value === null || typeof value !== "object") {
     return Object.assign(node.$, {
       get: node.get,
-      set: node.set,
+      set: wrappedSet,
       subscribe: node.$.subscribe.bind(node.$),
       pipe: node.$.pipe.bind(node.$),
       subscribeOnce: node.subscribeOnce,
@@ -1175,14 +1232,15 @@ function wrapWithProxy<T>(node: NodeCore<T>): RxNodeFor<T> {
     // Create the wrapped result first so we can reference it in update
     const wrapped = Object.assign(node.$, {
       get: node.get,
-      set: node.set,
+      set: wrappedSet,
       subscribe: node.$.subscribe.bind(node.$),
       pipe: node.$.pipe.bind(node.$),
       subscribeOnce: node.subscribeOnce,
       at: (index: number) => {
         const child = arrayNode.at(index);
         if (!child) return undefined;
-        return wrapWithProxy(child);
+        const childPath = path ? `${path}[${index}]` : `[${index}]`;
+        return wrapWithProxy(child, childPath, debugLog);
       },
       length: arrayNode.length$,
       push: arrayNode.push,
@@ -1223,7 +1281,7 @@ function wrapWithProxy<T>(node: NodeCore<T>): RxNodeFor<T> {
 
       // Node methods
       if (prop === "get") return node.get;
-      if (prop === "set") return node.set;
+      if (prop === "set") return wrappedSet;
       if (prop === "update") return updateFn;
       if (prop === "subscribeOnce") return node.subscribeOnce;
       if (prop === NODE) return node;
@@ -1237,7 +1295,8 @@ function wrapWithProxy<T>(node: NodeCore<T>): RxNodeFor<T> {
       if (objectNode.children && typeof prop === "string") {
         const child = objectNode.children.get(prop);
         if (child) {
-          return wrapWithProxy(child);
+          const childPath = path ? `${path}.${prop}` : prop;
+          return wrapWithProxy(child, childPath, debugLog);
         }
       }
 
@@ -1292,9 +1351,21 @@ function wrapWithProxy<T>(node: NodeCore<T>): RxNodeFor<T> {
 // Public API
 // =============================================================================
 
-export function state<T extends object>(initialState: T): RxState<T> {
+export interface StateOptions {
+  /** Enable debug logging for this store */
+  debug?: boolean;
+  /** Optional name for this store (used in debug logs) */
+  name?: string;
+}
+
+export function state<T extends object>(initialState: T, options?: StateOptions): RxState<T> {
+  // Create debug log function if debug is enabled
+  const debugLog = options?.debug 
+    ? createDebugLog({ enabled: true, storeName: options.name })
+    : undefined;
+  
   const node = createObjectNode(initialState);
-  return wrapWithProxy(node as NodeCore<T>) as RxState<T>;
+  return wrapWithProxy(node as NodeCore<T>, '', debugLog) as RxState<T>;
 }
 
 // Symbol to mark a value as nullable
