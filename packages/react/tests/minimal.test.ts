@@ -76,3 +76,63 @@ describe("BehaviorSubject (rxjs integration)", () => {
     expect(values).toEqual([0, 1, 2]);
   });
 });
+
+describe("multi-node selection (combineLatest pattern)", () => {
+  test("combining multiple nodes with array form", () => {
+    const store = state({ completed: 3, total: 10 });
+    
+    // Simulate what useSelector does internally with array form
+    const { combineLatest } = require("rxjs");
+    const { map } = require("rxjs/operators");
+    
+    const combined$ = combineLatest([store.completed, store.total]).pipe(
+      map(([completed, total]: [number, number]) => 
+        total > 0 ? (completed / total) * 100 : 0
+      )
+    );
+    
+    const values: number[] = [];
+    const sub = combined$.subscribe((v: number) => values.push(v));
+    
+    expect(values).toEqual([30]); // initial: 3/10 * 100 = 30
+    
+    store.completed.set(5);
+    expect(values).toEqual([30, 50]); // 5/10 * 100 = 50
+    
+    store.total.set(20);
+    expect(values).toEqual([30, 50, 25]); // 5/20 * 100 = 25
+    
+    sub.unsubscribe();
+  });
+
+  test("combining multiple nodes with object form", () => {
+    const store = state({ completed: 3, total: 10 });
+    
+    const { combineLatest } = require("rxjs");
+    const { map } = require("rxjs/operators");
+    
+    const keys = ["completed", "total"];
+    const observables = [store.completed, store.total];
+    
+    const combined$ = combineLatest(observables).pipe(
+      map((vals: unknown[]) => {
+        const result: Record<string, unknown> = {};
+        keys.forEach((key, i) => { result[key] = vals[i]; });
+        return result;
+      }),
+      map(({ completed, total }: { completed: number; total: number }) =>
+        total > 0 ? (completed / total) * 100 : 0
+      )
+    );
+    
+    const values: number[] = [];
+    const sub = combined$.subscribe((v: number) => values.push(v));
+    
+    expect(values).toEqual([30]);
+    
+    store.completed.set(7);
+    expect(values).toEqual([30, 70]);
+    
+    sub.unsubscribe();
+  });
+});

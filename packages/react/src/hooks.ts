@@ -1,5 +1,6 @@
 import { useSyncExternalStore, useMemo, useCallback, useRef } from "react";
 import type { Observable } from "rxjs";
+import { combineLatest } from "rxjs";
 import { map, distinctUntilChanged } from "rxjs/operators";
 
 /**
@@ -7,6 +8,20 @@ import { map, distinctUntilChanged } from "rxjs/operators";
  * Works with deepstate nodes since they extend Observable.
  */
 type ObservableValue<T> = T extends Observable<infer V> ? V : never;
+
+/**
+ * Type for array of observables -> tuple of their values
+ */
+type ObservableValues<T extends readonly Observable<unknown>[]> = {
+  [K in keyof T]: ObservableValue<T[K]>;
+};
+
+/**
+ * Type for object of observables -> object of their values
+ */
+type ObservableObjectValues<T extends Record<string, Observable<unknown>>> = {
+  [K in keyof T]: ObservableValue<T[K]>;
+};
 
 /**
  * Interface for deepstate nodes that have a synchronous get() method.
@@ -18,6 +33,15 @@ interface NodeWithGet<T> {
 
 function hasGet<T>(obj: unknown): obj is NodeWithGet<T> {
   return obj !== null && typeof obj === "object" && "get" in obj && typeof (obj as NodeWithGet<T>).get === "function";
+}
+
+function isObservable(obj: unknown): obj is Observable<unknown> {
+  return (
+    obj !== null &&
+    typeof obj === "object" &&
+    "subscribe" in obj &&
+    typeof (obj as Record<string, unknown>).subscribe === "function"
+  );
 }
 
 /**
@@ -142,7 +166,7 @@ export function useStateValue<T extends Observable<unknown>>(
 }
 
 /**
- * Hook to derive a value from a deepstate node with a selector function.
+ * Hook to derive a value from one or more deepstate nodes with a selector function.
  * Only re-renders when the derived value changes (using reference equality by default).
  *
  * Use this when you need to compute/transform a value from state.
@@ -150,12 +174,12 @@ export function useStateValue<T extends Observable<unknown>>(
  *
  * Uses React 18's useSyncExternalStore for concurrent-mode safety.
  *
- * @param node - A deepstate node to select from
- * @param selector - Function to derive a value from the node's value
+ * @param node - A deepstate node, array of nodes, or object of nodes to select from
+ * @param selector - Function to derive a value from the node's value(s)
  * @param equalityFn - Optional custom equality function (default: Object.is)
  * @returns The derived value
  *
- * @example
+ * @example Single node
  * ```tsx
  * import { state } from 'deepstate';
  * import { useSelector } from 'deepstate-react';
@@ -165,7 +189,7 @@ export function useStateValue<T extends Observable<unknown>>(
  *   items: [{ id: 1, price: 10 }, { id: 2, price: 20 }]
  * });
  *
- * // Derive a computed value
+ * // Derive a computed value from a single node
  * function FullName() {
  *   const fullName = useSelector(
  *     store.user,
@@ -173,17 +197,34 @@ export function useStateValue<T extends Observable<unknown>>(
  *   );
  *   return <span>{fullName}</span>;
  * }
+ * ```
  *
- * // Derive from an array
- * function TotalPrice() {
- *   const total = useSelector(
- *     store.items,
- *     items => items.reduce((sum, item) => sum + item.price, 0)
+ * @example Multiple nodes (array form)
+ * ```tsx
+ * // Combine multiple nodes - receives values as tuple
+ * function Progress() {
+ *   const percentage = useSelector(
+ *     [store.completed, store.total],
+ *     ([completed, total]) => total > 0 ? (completed / total) * 100 : 0
  *   );
- *   return <span>Total: ${total}</span>;
+ *   return <span>{percentage}%</span>;
  * }
+ * ```
  *
- * // With custom equality (e.g., for arrays)
+ * @example Multiple nodes (object form)
+ * ```tsx
+ * // Combine multiple nodes - receives values as object
+ * function Progress() {
+ *   const percentage = useSelector(
+ *     { completed: store.completed, total: store.total },
+ *     ({ completed, total }) => total > 0 ? (completed / total) * 100 : 0
+ *   );
+ *   return <span>{percentage}%</span>;
+ * }
+ * ```
+ *
+ * @example With custom equality
+ * ```tsx
  * function ItemIds() {
  *   const ids = useSelector(
  *     store.items,
@@ -194,43 +235,144 @@ export function useStateValue<T extends Observable<unknown>>(
  * }
  * ```
  */
+// Single node overload
 export function useSelector<T extends Observable<unknown>, R>(
   node: T,
   selector: (value: ObservableValue<T>) => R,
-  equalityFn: (a: R, b: R) => boolean = Object.is
-): R {
-  // Create derived observable that applies selector and dedupes
-  const derived$ = useMemo(
-    () =>
-      node.pipe(
-        map((value) => selector(value as ObservableValue<T>)),
+  equalityFn?: (a: R, b: R) => boolean
+): R;
+// Array of nodes overload
+export function useSelector<
+  T1 extends Observable<unknown>,
+  T2 extends Observable<unknown>,
+  R
+>(
+  nodes: [T1, T2],
+  selector: (values: [ObservableValue<T1>, ObservableValue<T2>]) => R,
+  equalityFn?: (a: R, b: R) => boolean
+): R;
+export function useSelector<
+  T1 extends Observable<unknown>,
+  T2 extends Observable<unknown>,
+  T3 extends Observable<unknown>,
+  R
+>(
+  nodes: [T1, T2, T3],
+  selector: (values: [ObservableValue<T1>, ObservableValue<T2>, ObservableValue<T3>]) => R,
+  equalityFn?: (a: R, b: R) => boolean
+): R;
+export function useSelector<
+  T1 extends Observable<unknown>,
+  T2 extends Observable<unknown>,
+  T3 extends Observable<unknown>,
+  T4 extends Observable<unknown>,
+  R
+>(
+  nodes: [T1, T2, T3, T4],
+  selector: (values: [ObservableValue<T1>, ObservableValue<T2>, ObservableValue<T3>, ObservableValue<T4>]) => R,
+  equalityFn?: (a: R, b: R) => boolean
+): R;
+export function useSelector<
+  T1 extends Observable<unknown>,
+  T2 extends Observable<unknown>,
+  T3 extends Observable<unknown>,
+  T4 extends Observable<unknown>,
+  T5 extends Observable<unknown>,
+  R
+>(
+  nodes: [T1, T2, T3, T4, T5],
+  selector: (values: [ObservableValue<T1>, ObservableValue<T2>, ObservableValue<T3>, ObservableValue<T4>, ObservableValue<T5>]) => R,
+  equalityFn?: (a: R, b: R) => boolean
+): R;
+// Object of nodes overload
+export function useSelector<T extends Record<string, Observable<unknown>>, R>(
+  nodes: T,
+  selector: (values: ObservableObjectValues<T>) => R,
+  equalityFn?: (a: R, b: R) => boolean
+): R;
+// Implementation
+export function useSelector(
+  nodeOrNodes: Observable<unknown> | Observable<unknown>[] | Record<string, Observable<unknown>>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  selector: (value: any) => any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  equalityFn: (a: any, b: any) => boolean = Object.is
+): unknown {
+  // Determine the form and create the combined observable
+  const { combined$, getInitialValue } = useMemo(() => {
+    // Array form: [node1, node2, ...]
+    if (Array.isArray(nodeOrNodes)) {
+      const nodes = nodeOrNodes as Observable<unknown>[];
+      return {
+        combined$: combineLatest(nodes).pipe(
+          map((values) => selector(values)),
+          distinctUntilChanged(equalityFn)
+        ),
+        getInitialValue: (): unknown => {
+          const values = nodes.map((n) => (hasGet<unknown>(n) ? n.get() : undefined));
+          return selector(values);
+        },
+      };
+    }
+
+    // Object form: { a: node1, b: node2, ... }
+    if (!isObservable(nodeOrNodes)) {
+      const obj = nodeOrNodes as Record<string, Observable<unknown>>;
+      const keys = Object.keys(obj);
+      const observables = keys.map((k) => obj[k]);
+
+      return {
+        combined$: combineLatest(observables).pipe(
+          map((values) => {
+            const result: Record<string, unknown> = {};
+            keys.forEach((key, i) => {
+              result[key] = values[i];
+            });
+            return selector(result);
+          }),
+          distinctUntilChanged(equalityFn)
+        ),
+        getInitialValue: (): unknown => {
+          const result: Record<string, unknown> = {};
+          keys.forEach((key) => {
+            const node = obj[key];
+            result[key] = hasGet<unknown>(node) ? node.get() : undefined;
+          });
+          return selector(result);
+        },
+      };
+    }
+
+    // Single node form
+    const node = nodeOrNodes as Observable<unknown>;
+    return {
+      combined$: node.pipe(
+        map((value) => selector(value)),
         distinctUntilChanged(equalityFn)
       ),
-    [node, selector, equalityFn]
-  );
-
-  // Get initial derived value
-  const getInitialValue = (): R => {
-    if (hasGet<ObservableValue<T>>(node)) {
-      return selector(node.get());
-    }
-    return undefined as R;
-  };
+      getInitialValue: (): unknown => {
+        if (hasGet<unknown>(node)) {
+          return selector(node.get());
+        }
+        return undefined;
+      },
+    };
+  }, [nodeOrNodes, selector, equalityFn]);
 
   // Ref to hold the current derived value
-  const valueRef = useRef<R>(getInitialValue());
+  const valueRef = useRef<unknown>(getInitialValue());
 
   // Subscribe callback for useSyncExternalStore
   const subscribe = useCallback(
     (onStoreChange: () => void) => {
-      const subscription = derived$.subscribe((newValue) => {
+      const subscription = combined$.subscribe((newValue) => {
         valueRef.current = newValue;
         onStoreChange();
       });
 
       return () => subscription.unsubscribe();
     },
-    [derived$]
+    [combined$]
   );
 
   // Get snapshot - just returns the ref value
