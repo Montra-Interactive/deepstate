@@ -40,7 +40,7 @@
   "peerDependencies": {
     "react": "^18 || ^19",
     "rxjs": "^7",
-    "@montra-interactive/deepstate": "^0.1.0"
+    "@montra-interactive/deepstate": "^0.2.0"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.1",
