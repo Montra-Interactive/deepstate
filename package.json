@@ -18,7 +18,8 @@
     "test:watch": "bun test --watch",
     "test:coverage": "bun test --coverage",
     "test:core": "bun test packages/core",
-    "test:react": "bun test packages/react"
+    "test:react": "bun test packages/react",
+    "build": "bun run --filter '*' build"
   },
   "devDependencies": {
     "@types/bun": "latest",
