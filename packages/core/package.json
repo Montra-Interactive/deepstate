@@ -26,7 +26,7 @@
   "types": "dist/index.d.ts",
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json"
+    "build": "bun build ./src/index.ts ./src/helpers.ts --outdir ./dist --target node --external rxjs && tsc -p tsconfig.build.json --emitDeclarationOnly"
   },
   "exports": {
     ".": {

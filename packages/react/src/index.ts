@@ -26,6 +26,6 @@ export {
   useStateValue,
   useSelector,
   useObservable,
-} from "./hooks.js";
+} from "./hooks";
 
 export type { Observable } from "rxjs";

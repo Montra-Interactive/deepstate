@@ -11,5 +11,5 @@
  * - selectFromEach() - Select from each array item with precise change detection
  */
 
-export { state, nullable, type RxState, type Draft } from "./deepstate.js";
-export { select, selectFromEach } from "./helpers.js";
+export { state, nullable, type RxState, type Draft } from "./deepstate";
+export { select, selectFromEach } from "./helpers";

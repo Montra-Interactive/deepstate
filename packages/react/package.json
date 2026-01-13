@@ -24,7 +24,7 @@
   "types": "dist/index.d.ts",
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json"
+    "build": "bun build ./src/index.ts --outdir ./dist --target node --external react --external rxjs --external deepstate && tsc -p tsconfig.build.json --emitDeclarationOnly"
   },
   "exports": {
     ".": {
