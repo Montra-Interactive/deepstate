@@ -1,6 +1,6 @@
 {
-  "name": "deepstate-react",
-  "version": "0.1.0",
+  "name": "@montra-interactive/deepstate-react",
+  "version": "0.1.3",
   "description": "React bindings for deepstate - Proxy-based reactive state management with RxJS.",
   "keywords": [
     "react",
@@ -40,7 +40,7 @@
   "peerDependencies": {
     "react": "^18 || ^19",
     "rxjs": "^7",
-    "deepstate": "^0.1.0"
+    "@montra-interactive/deepstate": "^0.1.0"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.1",

@@ -1,5 +1,5 @@
 {
-  "name": "deepstate",
+  "name": "@montra-interactive/deepstate",
   "version": "0.1.0",
   "description": "Proxy-based reactive state management with RxJS. Deep nested state observation with full TypeScript support.",
   "keywords": [
