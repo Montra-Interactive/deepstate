@@ -424,7 +424,10 @@ function createObjectNode<T extends object>(value: T): NodeCore<T> & {
   };
 }
 
-function createArrayNode<T>(value: T[]): NodeCore<T[]> & {
+function createArrayNode<T>(
+  value: T[],
+  comparator?: (a: T[], b: T[]) => boolean
+): NodeCore<T[]> & {
   at(index: number): NodeCore<T> | undefined;
   childCache: Map<number, NodeCore<T>>;
   length$: Observable<number> & { get(): number };
@@ -478,10 +481,17 @@ function createArrayNode<T>(value: T[]): NodeCore<T[]> & {
   // Lock for batching updates - when false, emissions are filtered out
   const lock$ = new BehaviorSubject<boolean>(true);
 
-  // Create observable that respects lock
-  const locked$ = combineLatest([subject$, lock$]).pipe(
+  // Create observable that respects lock, with optional distinct comparison
+  const baseLocked$ = combineLatest([subject$, lock$]).pipe(
     filter(([_, unlocked]) => unlocked),
     map(([arr, _]) => arr),
+  );
+  
+  // Apply distinct comparison if provided
+  const locked$ = (comparator 
+    ? baseLocked$.pipe(distinctUntilChanged(comparator))
+    : baseLocked$
+  ).pipe(
     map(deepFreeze),
     shareReplay(1)
   );
@@ -1079,6 +1089,14 @@ function createNodeForValue<T>(value: T, maybeNullable: boolean = false): NodeCo
     return createLeafNode(value as Primitive) as NodeCore<T>;
   }
   if (Array.isArray(value)) {
+    // Check if array was marked with options via array() helper
+    if (isArrayMarked(value)) {
+      const options = value[ARRAY_MARKER];
+      const comparator = getArrayComparator(options);
+      // Remove the marker before creating the node
+      delete (value as Record<symbol, unknown>)[ARRAY_MARKER];
+      return createArrayNode(value, comparator) as unknown as NodeCore<T>;
+    }
     return createArrayNode(value) as unknown as NodeCore<T>;
   }
   return createObjectNode(value as object) as unknown as NodeCore<T>;
@@ -1400,4 +1418,82 @@ export function nullable<T extends object>(value: T | null): T | null {
 // Check if a value was marked as nullable
 function isNullableMarked<T>(value: T): boolean {
   return value !== null && typeof value === "object" && NULLABLE_MARKER in value;
+}
+
+// Symbol to mark an array with distinct options
+const ARRAY_MARKER = Symbol("array");
+
+/** Comparison mode for array distinct checking */
+export type ArrayDistinct<T> = 
+  | false              // No deduplication (default)
+  | 'shallow'          // Reference equality per element
+  | 'deep'             // JSON.stringify comparison
+  | ((a: T[], b: T[]) => boolean);  // Custom comparator
+
+/** Options for the array() helper */
+export interface ArrayOptions<T> {
+  /** 
+   * How to compare arrays to prevent duplicate emissions.
+   * - false: No deduplication (default, always emits on set)
+   * - 'shallow': Reference equality per element (a[i] === b[i])
+   * - 'deep': JSON.stringify comparison (expensive for large arrays)
+   * - function: Custom comparator (a, b) => boolean
+   */
+  distinct?: ArrayDistinct<T>;
+}
+
+interface MarkedArray<T> extends Array<T> {
+  [ARRAY_MARKER]: ArrayOptions<T>;
+}
+
+/**
+ * Marks an array with options for how it should behave in state.
+ * Use this to enable deduplication (prevent emissions when setting same values).
+ * 
+ * @example
+ * ```ts
+ * const store = state({
+ *   // Default behavior - emits on every set
+ *   items: [1, 2, 3],
+ *   
+ *   // Shallow comparison - only emits if elements differ by reference
+ *   tags: array(['a', 'b'], { distinct: 'shallow' }),
+ *   
+ *   // Deep comparison - only emits if JSON representation differs
+ *   settings: array([{ theme: 'dark' }], { distinct: 'deep' }),
+ *   
+ *   // Custom comparator - you define equality
+ *   users: array([{ id: 1, name: 'Alice' }], {
+ *     distinct: (a, b) => 
+ *       a.length === b.length && 
+ *       a.every((user, i) => user.id === b[i].id)
+ *   }),
+ * });
+ * ```
+ */
+export function array<T>(value: T[], options: ArrayOptions<T> = {}): T[] {
+  const marked = [...value] as MarkedArray<T>;
+  marked[ARRAY_MARKER] = options;
+  return marked;
+}
+
+// Check if an array was marked with options
+function isArrayMarked<T>(value: unknown): value is MarkedArray<T> {
+  return Array.isArray(value) && ARRAY_MARKER in value;
+}
+
+// Get the distinct comparator function from array options
+function getArrayComparator<T>(options: ArrayOptions<T>): ((a: T[], b: T[]) => boolean) | undefined {
+  if (!options.distinct) return undefined;
+  
+  if (options.distinct === 'shallow') {
+    return (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+  }
+  
+  if (options.distinct === 'deep') {
+    return (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  }
+  
+  // Custom function
+  return options.distinct;
 }
