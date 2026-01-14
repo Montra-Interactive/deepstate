@@ -284,6 +284,106 @@ store.user.name
   .subscribe(name => console.log(name));
 ```
 
+## React Integration
+
+Install the React bindings:
+
+```bash
+bun add @montra-interactive/deepstate-react
+# or
+npm install @montra-interactive/deepstate-react
+```
+
+### `useSelect` - For Direct Node Access
+
+Use `useSelect` when you want to subscribe to a deepstate node directly. It always has an initial value because nodes have a synchronous `.get()` method.
+
+```tsx
+import { useSelect } from "@montra-interactive/deepstate-react";
+
+function UserProfile() {
+  // Subscribe to a primitive
+  const name = useSelect(store.user.name);  // string
+  
+  // Subscribe to an object
+  const user = useSelect(store.user);  // { name: string, age: number }
+  
+  // With selector - derive a value
+  const fullName = useSelect(
+    store.user,
+    user => `${user.firstName} ${user.lastName}`
+  );
+  
+  // Combine multiple nodes
+  const summary = useSelect(
+    [store.user.name, store.stats.completed],
+    ([name, completed]) => `${name} completed ${completed} tasks`
+  );
+  
+  return <div>{fullName}</div>;
+}
+```
+
+### `usePipeSelect` - For RxJS Operators
+
+Use `usePipeSelect` when you need to apply RxJS operators like `debounceTime`, `filter`, or `map`. The return type is `T | undefined` because the stream might not have emitted yet.
+
+```tsx
+import { usePipeSelect } from "@montra-interactive/deepstate-react";
+import { debounceTime, filter, map } from "rxjs";
+
+function SearchResults() {
+  // Debounce high-frequency updates
+  const debouncedQuery = usePipeSelect(
+    store.searchQuery.pipe(debounceTime(300))
+  );  // string | undefined
+  
+  // Filter values
+  const positiveCount = usePipeSelect(
+    store.count.pipe(filter(v => v > 0))
+  );  // number | undefined (undefined until v > 0)
+  
+  // Transform with map
+  const totalDuration = usePipeSelect(
+    store.clips.pipe(
+      map(clips => clips.reduce((sum, c) => sum + c.duration, 0))
+    )
+  );  // number | undefined
+  
+  // Handle the undefined case
+  if (debouncedQuery === undefined) {
+    return <div>Type to search...</div>;
+  }
+  
+  return <div>Results for: {debouncedQuery}</div>;
+}
+```
+
+### The Sync/Async Boundary
+
+**Why two hooks?**
+
+React components need a value *immediately* when they mount (synchronous), but RxJS streams are asynchronous - they might not have a value yet, or operators like `filter` might block values.
+
+| Hook | Initial Value | Use When |
+|------|---------------|----------|
+| `useSelect` | Always available (via `.get()`) | Direct node access, no operators |
+| `usePipeSelect` | `undefined` until first emission | Using `.pipe()` with RxJS operators |
+
+This separation is **type-safe**: `useSelect` returns `T`, while `usePipeSelect` returns `T | undefined`, forcing you to handle the "not yet" case.
+
+```tsx
+// ✅ useSelect - always has value
+const count = useSelect(store.count);
+const doubled = count * 2;  // Safe: count is always a number
+
+// ✅ usePipeSelect - might be undefined
+const filtered = usePipeSelect(store.count.pipe(filter(v => v > 0)));
+const doubled = (filtered ?? 0) * 2;  // Must handle undefined
+```
+
+For comprehensive React documentation, see [React Integration Guide](./docs/REACT.md).
+
 ## Immutability
 
 Values returned by `.get()` and emitted by subscriptions are deeply frozen:
@@ -400,7 +500,7 @@ import type { RxState, Draft, DeepReadonly } from "deepstate";
 
 ## API Reference
 
-### Exports
+### Core Exports (`@montra-interactive/deepstate`)
 
 | Export | Description |
 |--------|-------------|
@@ -408,6 +508,14 @@ import type { RxState, Draft, DeepReadonly } from "deepstate";
 | `nullable(value)` | Mark object as nullable |
 | `select(...obs)` | Combine observables |
 | `selectFromEach(arr, selector)` | Select from array items |
+
+### React Exports (`@montra-interactive/deepstate-react`)
+
+| Export | Description |
+|--------|-------------|
+| `useSelect(node, selector?, equalityFn?)` | Subscribe to deepstate nodes (returns `T`) |
+| `usePipeSelect(piped$)` | Subscribe to piped observables (returns `T \| undefined`) |
+| `useObservable(obs$, getSnapshot)` | Low-level hook for any Observable |
 
 ### Node Types
 
