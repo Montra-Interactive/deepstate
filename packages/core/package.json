@@ -1,6 +1,6 @@
 {
   "name": "@montra-interactive/deepstate",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Proxy-based reactive state management with RxJS. Deep nested state observation with full TypeScript support.",
   "keywords": [
     "state",
@@ -16,6 +16,7 @@
   ],
   "author": "Ronnie Magatti",
   "license": "MIT",
+  "homepage": "https://github.com/Montra-Interactive/deepstate/tree/main/packages/core",
   "repository": {
     "type": "git",
     "url": "https://github.com/Montra-Interactive/deepstate",
