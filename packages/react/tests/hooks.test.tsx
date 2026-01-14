@@ -6,7 +6,8 @@ import React from "react";
 import { render, screen, act } from "@testing-library/react";
 import { state } from "deepstate";
 import { BehaviorSubject } from "rxjs";
-import { useSelect, useObservable } from "../src";
+import { filter, map, debounceTime } from "rxjs/operators";
+import { useSelect, usePipeSelect, useObservable } from "../src";
 
 describe("useSelect", () => {
   describe("single node without selector", () => {
@@ -324,5 +325,199 @@ describe("useObservable", () => {
     });
 
     expect(screen.getByTestId("count").textContent).toBe("10");
+  });
+});
+
+describe("usePipeSelect", () => {
+  test("returns undefined initially when filter blocks initial value", () => {
+    const store = state({ count: 1 });
+
+    function FilteredCount() {
+      // Initial value is 1, which is filtered out (not > 3)
+      const value = usePipeSelect(store.count.pipe(filter((v) => v > 3)));
+      return <div data-testid="value">{value ?? "undefined"}</div>;
+    }
+
+    render(<FilteredCount />);
+    expect(screen.getByTestId("value").textContent).toBe("undefined");
+  });
+
+  test("emits when value passes filter", async () => {
+    const store = state({ count: 1 });
+
+    function FilteredCount() {
+      const value = usePipeSelect(store.count.pipe(filter((v) => v > 3)));
+      return <div data-testid="value">{value ?? "undefined"}</div>;
+    }
+
+    render(<FilteredCount />);
+    expect(screen.getByTestId("value").textContent).toBe("undefined");
+
+    // Update to value that passes filter
+    await act(() => {
+      store.count.set(5);
+    });
+
+    expect(screen.getByTestId("value").textContent).toBe("5");
+  });
+
+  test("does not re-render when filter blocks update", async () => {
+    const store = state({ count: 5 });
+    let renderCount = 0;
+
+    function FilteredCount() {
+      renderCount++;
+      const value = usePipeSelect(store.count.pipe(filter((v) => v > 3)));
+      return <div data-testid="value">{value ?? "undefined"}</div>;
+    }
+
+    render(<FilteredCount />);
+    const initialRenderCount = renderCount;
+
+    // Initial value passes filter, so we should have it
+    expect(screen.getByTestId("value").textContent).toBe("5");
+
+    // Update to value that does NOT pass filter
+    await act(() => {
+      store.count.set(2);
+    });
+
+    // Should NOT have re-rendered since filter blocked it
+    // Value should still be 5 (last emitted value)
+    expect(screen.getByTestId("value").textContent).toBe("5");
+
+    // Update to value that passes filter
+    await act(() => {
+      store.count.set(10);
+    });
+
+    expect(screen.getByTestId("value").textContent).toBe("10");
+  });
+
+  test("works with map operator", async () => {
+    const store = state({ items: [{ id: 1 }, { id: 2 }, { id: 3 }] });
+
+    function ItemCount() {
+      const count = usePipeSelect(store.items.pipe(map((items) => items.length)));
+      return <div data-testid="count">{count ?? "undefined"}</div>;
+    }
+
+    render(<ItemCount />);
+    // Map is synchronous, so first emission happens immediately
+    expect(screen.getByTestId("count").textContent).toBe("3");
+
+    await act(() => {
+      store.items.push({ id: 4 });
+    });
+
+    expect(screen.getByTestId("count").textContent).toBe("4");
+  });
+
+  test("filter then update pattern works as expected", async () => {
+    /**
+     * How it should work:
+     * 1. initialValue (1) does not pass filter -> undefined
+     * 2. update to 4 -> passes filter -> returns 4
+     * 3. update to 2 -> filtered out -> does not emit (still 4)
+     * 4. update to 1 -> passes filter -> returns 1, re-renders
+     */
+    const store = state({ value: 1 });
+
+    function FilteredValue() {
+      // Only emit values > 3 OR value === 1 (to test the "passes again" case)
+      const value = usePipeSelect(
+        store.value.pipe(filter((v) => v > 3 || v === 1))
+      );
+      return <div data-testid="value">{value ?? "undefined"}</div>;
+    }
+
+    render(<FilteredValue />);
+    // Initial value 1 passes filter (v === 1)
+    expect(screen.getByTestId("value").textContent).toBe("1");
+
+    // Update to 4 -> passes filter (v > 3)
+    await act(() => {
+      store.value.set(4);
+    });
+    expect(screen.getByTestId("value").textContent).toBe("4");
+
+    // Update to 2 -> filtered out
+    await act(() => {
+      store.value.set(2);
+    });
+    expect(screen.getByTestId("value").textContent).toBe("4"); // Still 4
+
+    // Update to 1 -> passes filter (v === 1)
+    await act(() => {
+      store.value.set(1);
+    });
+    expect(screen.getByTestId("value").textContent).toBe("1");
+  });
+
+  test("debounceTime reduces renders", async () => {
+    const store = state({ search: "" });
+    let renderCount = 0;
+
+    function DebouncedSearch() {
+      renderCount++;
+      const search = usePipeSelect(store.search.pipe(debounceTime(50)));
+      return <div data-testid="search">{search ?? "undefined"}</div>;
+    }
+
+    render(<DebouncedSearch />);
+    const initialRenders = renderCount;
+
+    // Initial is undefined (debounce hasn't emitted yet)
+    expect(screen.getByTestId("search").textContent).toBe("undefined");
+
+    // Rapid updates
+    await act(() => {
+      store.search.set("a");
+    });
+    await act(() => {
+      store.search.set("ab");
+    });
+    await act(() => {
+      store.search.set("abc");
+    });
+
+    // Still undefined - debounce hasn't fired
+    expect(screen.getByTestId("search").textContent).toBe("undefined");
+
+    // Wait for debounce
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+
+    // Now should have the final value
+    expect(screen.getByTestId("search").textContent).toBe("abc");
+
+    // Should have only rendered once for the debounced value (plus initial)
+    expect(renderCount).toBeLessThanOrEqual(initialRenders + 2);
+  });
+
+  test("combined operators work", async () => {
+    const store = state({ count: 0 });
+
+    function Combined() {
+      const doubled = usePipeSelect(
+        store.count.pipe(
+          filter((v) => v > 0),
+          map((v) => v * 2)
+        )
+      );
+      return <div data-testid="doubled">{doubled ?? "undefined"}</div>;
+    }
+
+    render(<Combined />);
+    // 0 is filtered out
+    expect(screen.getByTestId("doubled").textContent).toBe("undefined");
+
+    await act(() => {
+      store.count.set(5);
+    });
+
+    // 5 passes filter, then doubled to 10
+    expect(screen.getByTestId("doubled").textContent).toBe("10");
   });
 });

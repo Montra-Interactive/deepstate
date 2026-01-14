@@ -1,4 +1,4 @@
-import { state } from "../src";
+import { state } from "../packages/core/src";
 
 // =============================================================================
 // Example 1: Non-nullable object - full nested access with update()

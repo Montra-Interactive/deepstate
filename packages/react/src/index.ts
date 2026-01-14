@@ -35,10 +35,13 @@
 
 export {
   useSelect,
+  usePipeSelect,
   useObservable,
   // Deprecated aliases for backwards compatibility
   useStateValue,
   useSelector,
 } from "./hooks";
+
+export type { DeepstateNode } from "./hooks";
 
 export type { Observable } from "rxjs";

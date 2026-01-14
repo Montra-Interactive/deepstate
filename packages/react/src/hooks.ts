@@ -31,6 +31,12 @@ interface NodeWithGet<T> {
   get(): T;
 }
 
+/**
+ * A deepstate node - an Observable that also has a synchronous get() method.
+ * Used to enforce that useSelect only accepts deepstate nodes, not piped observables.
+ */
+export type DeepstateNode<T> = Observable<T> & NodeWithGet<T>;
+
 function hasGet<T>(obj: unknown): obj is NodeWithGet<T> {
   if (obj === null || typeof obj !== "object") return false;
   // Check by accessing get directly - works with proxied observables
@@ -184,65 +190,45 @@ export function useObservable<T>(
  * ```
  */
 // Single node, no selector - return raw value
-export function useSelect<T extends Observable<unknown>>(
-  node: T
-): ObservableValue<T>;
+// Note: Requires a deepstate node (with .get()), not a piped observable.
+// Use usePipeSelect for piped observables.
+export function useSelect<T>(
+  node: DeepstateNode<T>
+): T;
 // Single node with selector
-export function useSelect<T extends Observable<unknown>, R>(
-  node: T,
-  selector: (value: ObservableValue<T>) => R,
+export function useSelect<T, R>(
+  node: DeepstateNode<T>,
+  selector: (value: T) => R,
   equalityFn?: (a: R, b: R) => boolean
 ): R;
 // Array of 2 nodes with selector
-export function useSelect<
-  T1 extends Observable<unknown>,
-  T2 extends Observable<unknown>,
-  R
->(
-  nodes: [T1, T2],
-  selector: (values: [ObservableValue<T1>, ObservableValue<T2>]) => R,
+export function useSelect<T1, T2, R>(
+  nodes: [DeepstateNode<T1>, DeepstateNode<T2>],
+  selector: (values: [T1, T2]) => R,
   equalityFn?: (a: R, b: R) => boolean
 ): R;
 // Array of 3 nodes with selector
-export function useSelect<
-  T1 extends Observable<unknown>,
-  T2 extends Observable<unknown>,
-  T3 extends Observable<unknown>,
-  R
->(
-  nodes: [T1, T2, T3],
-  selector: (values: [ObservableValue<T1>, ObservableValue<T2>, ObservableValue<T3>]) => R,
+export function useSelect<T1, T2, T3, R>(
+  nodes: [DeepstateNode<T1>, DeepstateNode<T2>, DeepstateNode<T3>],
+  selector: (values: [T1, T2, T3]) => R,
   equalityFn?: (a: R, b: R) => boolean
 ): R;
 // Array of 4 nodes with selector
-export function useSelect<
-  T1 extends Observable<unknown>,
-  T2 extends Observable<unknown>,
-  T3 extends Observable<unknown>,
-  T4 extends Observable<unknown>,
-  R
->(
-  nodes: [T1, T2, T3, T4],
-  selector: (values: [ObservableValue<T1>, ObservableValue<T2>, ObservableValue<T3>, ObservableValue<T4>]) => R,
+export function useSelect<T1, T2, T3, T4, R>(
+  nodes: [DeepstateNode<T1>, DeepstateNode<T2>, DeepstateNode<T3>, DeepstateNode<T4>],
+  selector: (values: [T1, T2, T3, T4]) => R,
   equalityFn?: (a: R, b: R) => boolean
 ): R;
 // Array of 5 nodes with selector
-export function useSelect<
-  T1 extends Observable<unknown>,
-  T2 extends Observable<unknown>,
-  T3 extends Observable<unknown>,
-  T4 extends Observable<unknown>,
-  T5 extends Observable<unknown>,
-  R
->(
-  nodes: [T1, T2, T3, T4, T5],
-  selector: (values: [ObservableValue<T1>, ObservableValue<T2>, ObservableValue<T3>, ObservableValue<T4>, ObservableValue<T5>]) => R,
+export function useSelect<T1, T2, T3, T4, T5, R>(
+  nodes: [DeepstateNode<T1>, DeepstateNode<T2>, DeepstateNode<T3>, DeepstateNode<T4>, DeepstateNode<T5>],
+  selector: (values: [T1, T2, T3, T4, T5]) => R,
   equalityFn?: (a: R, b: R) => boolean
 ): R;
 // Object of nodes with selector
-export function useSelect<T extends Record<string, Observable<unknown>>, R>(
+export function useSelect<T extends Record<string, DeepstateNode<unknown>>, R>(
   nodes: T,
-  selector: (values: ObservableObjectValues<T>) => R,
+  selector: (values: { [K in keyof T]: T[K] extends DeepstateNode<infer V> ? V : never }) => R,
   equalityFn?: (a: R, b: R) => boolean
 ): R;
 // Implementation
@@ -364,3 +350,99 @@ export const useStateValue = useSelect;
  * @deprecated Use `useSelect` instead. This is an alias for backwards compatibility.
  */
 export const useSelector = useSelect;
+
+/**
+ * Hook to subscribe to a piped observable stream.
+ * Unlike `useSelect`, this hook is designed for observables that have been transformed
+ * with RxJS operators like `filter`, `debounceTime`, `map`, etc.
+ * 
+ * Since piped observables don't have a synchronous `.get()` method, the initial value
+ * is `undefined` until the first emission occurs.
+ * 
+ * @param piped$ - An RxJS Observable (typically created by calling .pipe() on a deepstate node)
+ * @returns The current value from the stream, or `undefined` if no value has been emitted yet
+ * 
+ * @example Basic usage with filter
+ * ```tsx
+ * import { usePipeSelect } from '@montra-interactive/deepstate-react';
+ * import { filter } from 'rxjs';
+ * 
+ * function OnlyPositive() {
+ *   // Will be undefined until a value > 0 is emitted
+ *   const value = usePipeSelect(store.count.pipe(filter(v => v > 0)));
+ *   
+ *   if (value === undefined) {
+ *     return <span>Waiting for positive value...</span>;
+ *   }
+ *   return <span>{value}</span>;
+ * }
+ * ```
+ * 
+ * @example Debouncing high-frequency updates
+ * ```tsx
+ * import { usePipeSelect } from '@montra-interactive/deepstate-react';
+ * import { debounceTime } from 'rxjs';
+ * 
+ * function DebouncedInput() {
+ *   // Reduces re-renders by debouncing updates
+ *   const searchTerm = usePipeSelect(store.searchInput.pipe(debounceTime(300)));
+ *   
+ *   return <span>Searching for: {searchTerm ?? 'nothing yet'}</span>;
+ * }
+ * ```
+ * 
+ * @example Mapping values
+ * ```tsx
+ * import { usePipeSelect } from '@montra-interactive/deepstate-react';
+ * import { map } from 'rxjs';
+ * 
+ * function ItemCount() {
+ *   const count = usePipeSelect(store.items.pipe(map(items => items.length)));
+ *   
+ *   return <span>Count: {count ?? 0}</span>;
+ * }
+ * ```
+ * 
+ * @example Combining operators
+ * ```tsx
+ * import { usePipeSelect } from '@montra-interactive/deepstate-react';
+ * import { filter, debounceTime, distinctUntilChanged } from 'rxjs';
+ * 
+ * function FilteredSearch() {
+ *   const results = usePipeSelect(
+ *     store.searchResults.pipe(
+ *       filter(r => r.length > 0),
+ *       debounceTime(200),
+ *       distinctUntilChanged()
+ *     )
+ *   );
+ *   
+ *   if (results === undefined) {
+ *     return <span>No results yet</span>;
+ *   }
+ *   return <ul>{results.map(r => <li key={r.id}>{r.name}</li>)}</ul>;
+ * }
+ * ```
+ */
+export function usePipeSelect<T>(piped$: Observable<T>): T | undefined {
+  // Track whether we've received a value yet
+  const hasValueRef = useRef(false);
+  const valueRef = useRef<T | undefined>(undefined);
+
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => {
+      const subscription = piped$.subscribe((newValue) => {
+        hasValueRef.current = true;
+        valueRef.current = newValue;
+        onStoreChange();
+      });
+
+      return () => subscription.unsubscribe();
+    },
+    [piped$]
+  );
+
+  const getSnapshot = useCallback(() => valueRef.current, []);
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
