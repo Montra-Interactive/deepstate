@@ -361,9 +361,18 @@ function SearchResults() {
 
 ### The Sync/Async Boundary
 
-**Why two hooks?**
+**Why two hooks? Why is `usePipeSelect` return type `T | undefined`?**
 
-React components need a value *immediately* when they mount (synchronous), but RxJS streams are asynchronous - they might not have a value yet, or operators like `filter` might block values.
+deepstate is a **synchronous store** backed by **reactive streams**. Every node always has a current value via `.get()`. But when you `.pipe()`, you enter the asynchronous world of RxJS where:
+
+- `debounceTime(300)` - delays emissions, nothing to return immediately
+- `filter(v => v > 0)` - if current value is `0`, nothing has passed yet
+- `switchMap(v => fetch(...))` - depends on async operation completing
+
+The piped observable **has no synchronous value** - it's a stream that will emit values over time. So `usePipeSelect` honestly returns `T | undefined`:
+
+- `undefined` = "stream hasn't emitted yet (or operator blocked it)"
+- `T` = "stream emitted a value"
 
 | Hook | Initial Value | Use When |
 |------|---------------|----------|
@@ -373,11 +382,11 @@ React components need a value *immediately* when they mount (synchronous), but R
 This separation is **type-safe**: `useSelect` returns `T`, while `usePipeSelect` returns `T | undefined`, forcing you to handle the "not yet" case.
 
 ```tsx
-// ✅ useSelect - always has value
+// ✅ useSelect - always has value (node has .get())
 const count = useSelect(store.count);
 const doubled = count * 2;  // Safe: count is always a number
 
-// ✅ usePipeSelect - might be undefined
+// ✅ usePipeSelect - might be undefined (stream might not have emitted)
 const filtered = usePipeSelect(store.count.pipe(filter(v => v > 0)));
 const doubled = (filtered ?? 0) * 2;  // Must handle undefined
 ```

@@ -23,6 +23,15 @@ deepstate provides two React hooks:
 
 Understanding when to use each hook requires understanding the boundary between React's synchronous rendering and RxJS's asynchronous streams.
 
+### The Core Tension
+
+deepstate is a **synchronous store backed by a reactive stream**:
+
+- **The store is synchronous** - every node always has a current value accessible via `.get()`
+- **The reactivity is stream-based** - RxJS handles subscriptions and change notifications
+
+This works beautifully... until you `.pipe()`.
+
 ### The Problem
 
 React components need a value *immediately* when they render:
@@ -40,18 +49,97 @@ deepstate nodes can provide this via `.get()`:
 const count = store.count.get();  // Synchronous, always works
 ```
 
-But RxJS operators introduce asynchronicity:
+But when you call `.pipe()`, you leave the synchronous world and enter async stream territory:
 
 ```tsx
-// What's the "current value" here?
-const debounced$ = store.count.pipe(debounceTime(300));
-// debounceTime delays emissions - there's no value yet!
-
-const filtered$ = store.count.pipe(filter(v => v > 0));
-// If count is 0, nothing has passed the filter yet!
+const piped$ = store.count.pipe(debounceTime(300));
 ```
 
+**The conundrum:** What is the "current value" of `piped$`?
+
+### Why Piped Observables Can't Have a Synchronous Value
+
+When you `.pipe()` a deepstate node, RxJS returns a **new Observable** - not a deepstate node. This new observable:
+
+1. **Has no `.get()` method** - RxJS observables don't have synchronous getters
+2. **Might not have emitted yet** - depending on the operators
+
+Consider these operators and why they can't provide an immediate value:
+
+| Operator | Why No Sync Value? |
+|----------|-------------------|
+| `debounceTime(300)` | Waits 300ms before emitting - nothing to return yet |
+| `delay(100)` | Delays all emissions - initial value is delayed too |
+| `filter(v => v > 0)` | If current value is `0`, nothing has passed the filter |
+| `switchMap(v => fetch(...))` | Depends on async operation completing |
+| `take(5)` | Stateful - depends on emission count |
+| `distinctUntilChanged()` | Needs to compare with previous - but there is no previous yet |
+
+Even `map()`, which seems synchronous, returns a plain Observable without `.get()`:
+
+```tsx
+const mapped$ = store.count.pipe(map(v => v * 2));
+// mapped$ is Observable<number>, not a deepstate node
+// It has .subscribe() but no .get()
+```
+
+### The Design Decision
+
+We considered several approaches:
+
+**Option 1: "Lie" - Preserve `.get()` through pipes**
+```tsx
+// Make .pipe() return something with .get() attached
+const piped$ = store.count.pipe(debounceTime(300));
+piped$.get(); // Returns store.count.get() - the UN-debounced value!
+```
+
+This is misleading. You'd get the raw value on first render, then debounced updates. The type would say `number` but the behavior would be inconsistent.
+
+**Option 2: Try to execute operators synchronously**
+```tsx
+// Apply filter to current value?
+const filtered$ = store.count.pipe(filter(v => v > 0));
+filtered$.get(); // If count is 0... return undefined? throw?
+```
+
+This breaks down for async operators like `debounceTime` and `switchMap`. No consistent behavior possible.
+
+**Option 3: Honest types - return `T | undefined`**
+```tsx
+const value = usePipeSelect(store.count.pipe(filter(v => v > 0)));
+// Type: number | undefined
+// Meaning: "I don't have a value until the stream emits one"
+```
+
+We chose Option 3 because it's **honest**. The type `T | undefined` correctly represents:
+- `undefined` = "the stream hasn't emitted a value (that passed your operators) yet"
+- `T` = "we have a value from the stream"
+
 ### The Solution
+
+Two hooks with different contracts:
+
+**`useSelect`** - For synchronous access to deepstate nodes:
+- Node has `.get()` → initial value is always available
+- Return type: `T`
+- Use when: Direct access to store properties
+
+**`usePipeSelect`** - For asynchronous piped streams:
+- Piped observable has no `.get()` → initial value is `undefined`
+- Return type: `T | undefined`
+- Use when: Using RxJS operators like `filter`, `debounceTime`, `map`, etc.
+
+This is **type-safe** - the compiler forces you to handle the `undefined` case with `usePipeSelect`.
+
+### Mental Model
+
+Think of it this way:
+
+- **`useSelect(store.x)`** = "Give me the value that's in the store right now, and update me when it changes"
+- **`usePipeSelect(store.x.pipe(...))`** = "Subscribe me to this stream - I'll get values when (and if) they come through"
+
+The store always has a value. A stream might not have emitted yet.
 
 Two hooks with different contracts:
 
