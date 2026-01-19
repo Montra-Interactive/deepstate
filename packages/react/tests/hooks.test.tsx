@@ -521,3 +521,324 @@ describe("usePipeSelect", () => {
     expect(screen.getByTestId("doubled").textContent).toBe("10");
   });
 });
+
+describe("stack overflow prevention", () => {
+  test("should handle rapid TIME_UPDATE pattern (like audio playback)", async () => {
+    // This simulates the exact pattern that causes stack overflow:
+    // - HTML5 audio timeupdate fires ~4x per second (every 250ms)
+    // - Each update triggers syncToRedux which sets 12+ fields
+    // - Component using useSelect(store) on root re-renders each time
+    const { array } = await import("deepstate");
+    
+    interface PlayableScene {
+      sceneId: string;
+      ttsJobId: string;
+      durationMs: number;
+    }
+
+    const scenes: PlayableScene[] = Array.from({ length: 5 }, (_, i) => ({
+      sceneId: `scene-${i}`,
+      ttsJobId: `job-${i}`,
+      durationMs: 5000,
+    }));
+
+    const store = state({
+      isPlaying: false,
+      isPaused: false,
+      isLoading: false,
+      isScrubbing: false,
+      isInitializing: true,
+      globalTimeMs: 0,
+      totalDurationMs: 25000,
+      scenes: array(scenes, { distinct: "deep" }),
+      triggerMode: "CHAINED" as const,
+      wasPlayingBeforeScrub: false,
+      scrubTargetSceneIndex: null as number | null,
+      error: null as { message: string } | null,
+      selectedSceneId: null as string | null,
+    });
+
+    let renderCount = 0;
+
+    // Component using the problematic pattern: useSelect(store) on root
+    function StoryboardScrubber() {
+      renderCount++;
+      const {
+        isPlaying,
+        globalTimeMs,
+        totalDurationMs,
+        scenes,
+        isScrubbing,
+      } = useSelect(store);
+      
+      return (
+        <div data-testid="scrubber">
+          {isPlaying ? "playing" : "stopped"} | 
+          {globalTimeMs}/{totalDurationMs} | 
+          {scenes.length} scenes |
+          {isScrubbing ? "scrubbing" : "idle"}
+        </div>
+      );
+    }
+
+    render(<StoryboardScrubber />);
+    const initialRenderCount = renderCount;
+
+    // Simulate syncToRedux being called rapidly (like during playback)
+    // This is what happens on each TIME_UPDATE event from audio element
+    await act(async () => {
+      for (let i = 0; i < 20; i++) {
+        // Simulate syncToRedux update pattern - sets multiple fields at once
+        store.update((s) => {
+          s.isPlaying.set(true);
+          s.isPaused.set(false);
+          s.globalTimeMs.set(i * 250); // 250ms increments like timeupdate
+          s.isInitializing.set(false);
+        });
+        
+        // Small delay to simulate real timing
+        await new Promise(r => setTimeout(r, 10));
+      }
+    });
+
+    // Should not throw and should have rendered multiple times
+    expect(renderCount).toBeGreaterThan(initialRenderCount);
+    expect(screen.getByTestId("scrubber").textContent).toContain("playing");
+  });
+
+  test("should handle synchronous burst of updates without stack overflow", async () => {
+    // Even more aggressive test: many synchronous updates without any delay
+    // This simulates worst-case scenario
+    const { array } = await import("deepstate");
+    
+    interface PlayableScene {
+      sceneId: string;
+      ttsJobId: string;
+      durationMs: number;
+    }
+
+    const scenes: PlayableScene[] = Array.from({ length: 10 }, (_, i) => ({
+      sceneId: `scene-${i}`,
+      ttsJobId: `job-${i}`,
+      durationMs: 5000,
+    }));
+
+    const store = state({
+      isPlaying: false,
+      isPaused: false,
+      isLoading: false,
+      isScrubbing: false,
+      isInitializing: true,
+      globalTimeMs: 0,
+      totalDurationMs: 50000,
+      scenes: array(scenes, { distinct: "deep" }),
+      triggerMode: "CHAINED" as const,
+      wasPlayingBeforeScrub: false,
+      scrubTargetSceneIndex: null as number | null,
+      error: null as { message: string } | null,
+      selectedSceneId: null as string | null,
+    });
+
+    function StoryboardScrubber() {
+      const state = useSelect(store);
+      return <div data-testid="time">{state.globalTimeMs}</div>;
+    }
+
+    render(<StoryboardScrubber />);
+
+    // Burst of 100 synchronous updates - no delays
+    await act(() => {
+      for (let i = 0; i < 100; i++) {
+        store.update((s) => {
+          s.isPlaying.set(true);
+          s.isPaused.set(false);
+          s.globalTimeMs.set(i * 100);
+          s.selectedSceneId.set(`scene-${i % 10}`);
+        });
+      }
+    });
+
+    expect(screen.getByTestId("time").textContent).toBe("9900");
+  });
+
+  test("should handle useSelect on root store with many fields and array with distinct:deep", async () => {
+    // This reproduces the EXACT TTS player store pattern from frontend-component
+    const { array } = await import("deepstate");
+    
+    interface PlayableScene {
+      sceneId: string;
+      ttsJobId: string;
+      durationMs: number;
+    }
+
+    // Use 10 scenes (realistic for production)
+    const scenes: PlayableScene[] = Array.from({ length: 10 }, (_, i) => ({
+      sceneId: `scene-${i}`,
+      ttsJobId: `job-${i}`,
+      durationMs: 3000 + i * 500,
+    }));
+
+    // EXACT replica of ttsPlayerStore from frontend-component/store/deepstate/tts-player.store.ts
+    const store = state({
+      isPlaying: false,
+      isPaused: false,
+      isLoading: false,
+      isScrubbing: false,
+      isInitializing: true,
+      globalTimeMs: 0,
+      totalDurationMs: 0,
+      scenes: array(scenes, { distinct: "deep" }), // <-- This is the key difference!
+      triggerMode: "CHAINED" as const,
+      wasPlayingBeforeScrub: false,
+      scrubTargetSceneIndex: null as number | null,
+      error: null as { message: string } | null,
+      selectedSceneId: null as string | null,
+    });
+
+    // The problematic pattern: useSelect(store) subscribes to entire root
+    function StoryboardScrubber() {
+      const {
+        isPlaying,
+        isPaused,
+        globalTimeMs,
+        totalDurationMs,
+        scenes,
+        isScrubbing,
+      } = useSelect(store);
+      
+      return (
+        <div data-testid="scrubber">
+          {isPlaying ? "playing" : "stopped"} | 
+          {isPaused ? "paused" : "running"} | 
+          {globalTimeMs}/{totalDurationMs} | 
+          {scenes.length} scenes |
+          {isScrubbing ? "scrubbing" : "idle"}
+        </div>
+      );
+    }
+
+    // Should not throw stack overflow
+    expect(() => {
+      render(<StoryboardScrubber />);
+    }).not.toThrow();
+
+    expect(screen.getByTestId("scrubber")).toBeTruthy();
+
+    // Updates should also work
+    await act(() => {
+      store.isPlaying.set(true);
+      store.globalTimeMs.set(1000);
+    });
+
+    expect(screen.getByTestId("scrubber").textContent).toContain("playing");
+  });
+
+  test("should handle multiple components subscribing to same store", async () => {
+    const store = state({
+      isPlaying: false,
+      isPaused: true,
+      isLoading: false,
+      globalTimeMs: 0,
+      scenes: [{ id: 1 }, { id: 2 }],
+      selectedSceneId: null as string | null,
+    });
+
+    // Component 1: subscribes to root (problematic pattern)
+    function ComponentA() {
+      const { isPlaying, isPaused, isLoading, globalTimeMs, scenes } = useSelect(store);
+      return (
+        <div data-testid="a">
+          A: {isPlaying ? "y" : "n"}/{isPaused ? "y" : "n"}/{isLoading ? "y" : "n"}/{globalTimeMs}/{scenes.length}
+        </div>
+      );
+    }
+
+    // Component 2: also subscribes to root
+    function ComponentB() {
+      const { isPlaying, scenes } = useSelect(store);
+      return <div data-testid="b">B: {isPlaying ? "y" : "n"}/{scenes.length}</div>;
+    }
+
+    // Component 3: subscribes to individual fields
+    function ComponentC() {
+      const isPlaying = useSelect(store.isPlaying);
+      const isPaused = useSelect(store.isPaused);
+      return <div data-testid="c">C: {isPlaying ? "y" : "n"}/{isPaused ? "y" : "n"}</div>;
+    }
+
+    function App() {
+      return (
+        <>
+          <ComponentA />
+          <ComponentB />
+          <ComponentC />
+        </>
+      );
+    }
+
+    // Should not throw stack overflow
+    expect(() => {
+      render(<App />);
+    }).not.toThrow();
+
+    expect(screen.getByTestId("a")).toBeTruthy();
+    expect(screen.getByTestId("b")).toBeTruthy();
+    expect(screen.getByTestId("c")).toBeTruthy();
+
+    // Rapid updates should also work
+    await act(() => {
+      store.isPlaying.set(true);
+    });
+    await act(() => {
+      store.isPaused.set(false);
+    });
+    await act(() => {
+      store.globalTimeMs.set(500);
+    });
+
+    expect(screen.getByTestId("a").textContent).toContain("A: y/n/n/500/2");
+  });
+
+  test("should handle useSelect on store with array using distinct:deep", async () => {
+    const { array } = await import("deepstate");
+    
+    interface Item {
+      id: number;
+      name: string;
+      value: number;
+    }
+
+    const items: Item[] = Array.from({ length: 10 }, (_, i) => ({
+      id: i,
+      name: `item-${i}`,
+      value: i * 10,
+    }));
+
+    const store = state({
+      items: array(items, { distinct: "deep" }),
+      selectedId: null as number | null,
+    });
+
+    function ItemList() {
+      // Subscribe to entire store including array
+      const { items, selectedId } = useSelect(store);
+      return (
+        <div data-testid="list">
+          {items.length} items, selected: {selectedId ?? "none"}
+        </div>
+      );
+    }
+
+    expect(() => {
+      render(<ItemList />);
+    }).not.toThrow();
+
+    expect(screen.getByTestId("list").textContent).toBe("10 items, selected: none");
+
+    await act(() => {
+      store.selectedId.set(5);
+    });
+
+    expect(screen.getByTestId("list").textContent).toBe("10 items, selected: 5");
+  });
+});

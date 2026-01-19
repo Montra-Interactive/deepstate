@@ -79,21 +79,29 @@ function countedDistinctUntilChanged<T>(compareFn?: (a: T, b: T) => boolean) {
 // Deep Freeze
 // =============================================================================
 
-function deepFreeze<T>(obj: T): T {
+function deepFreezeImpl<T>(obj: T, seen: WeakSet<object>): T {
   if (obj === null || typeof obj !== "object") return obj;
   if (Object.isFrozen(obj)) return obj;
+
+  // Circular reference protection
+  if (seen.has(obj as object)) return obj;
+  seen.add(obj as object);
 
   Object.freeze(obj);
 
   if (Array.isArray(obj)) {
-    obj.forEach((item) => deepFreeze(item));
+    obj.forEach((item) => deepFreezeImpl(item, seen));
   } else {
     Object.keys(obj).forEach((key) => {
-      deepFreeze((obj as Record<string, unknown>)[key]);
+      deepFreezeImpl((obj as Record<string, unknown>)[key], seen);
     });
   }
 
   return obj;
+}
+
+function deepFreeze<T>(obj: T): T {
+  return deepFreezeImpl(obj, new WeakSet<object>());
 }
 
 // =============================================================================
@@ -514,6 +522,14 @@ function createArrayNode<T>(
     childCache,
     get: () => deepFreeze([...subject$.getValue()]) as T[],
     set: (v: T[]) => {
+      // Check for circular references in array items
+      if (hasCircularReference(v)) {
+        throw new Error(
+          'Circular reference detected in array value. ' +
+          'Deepstate does not support circular references. ' +
+          'Please flatten your data structure or remove the circular reference.'
+        );
+      }
       // Clear child cache when array is replaced
       childCache.clear();
       subject$.next([...v]);
@@ -1067,6 +1083,19 @@ function createNestedArrayProjection<T>(
   };
 }
 
+// Helper to detect circular references in an object
+function hasCircularReference(obj: unknown, seen = new WeakSet<object>()): boolean {
+  if (obj === null || typeof obj !== 'object') return false;
+  if (seen.has(obj as object)) return true;
+  seen.add(obj as object);
+  
+  if (Array.isArray(obj)) {
+    return obj.some(item => hasCircularReference(item, seen));
+  }
+  
+  return Object.values(obj).some(value => hasCircularReference(value, seen));
+}
+
 // Factory to create the right node type
 // When maybeNullable is true and value is null/undefined, creates a NullableNodeCore
 // that can later be upgraded to an object with children
@@ -1088,6 +1117,16 @@ function createNodeForValue<T>(value: T, maybeNullable: boolean = false): NodeCo
   if (typeof value !== "object") {
     return createLeafNode(value as Primitive) as NodeCore<T>;
   }
+  
+  // Check for circular references before creating nodes
+  if (hasCircularReference(value)) {
+    throw new Error(
+      'Circular reference detected in state value. ' +
+      'Deepstate does not support circular references because each property becomes a reactive node. ' +
+      'Please flatten your data structure or remove the circular reference.'
+    );
+  }
+  
   if (Array.isArray(value)) {
     // Check if array was marked with options via array() helper
     if (isArrayMarked(value)) {

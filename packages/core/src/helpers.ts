@@ -8,15 +8,26 @@
 import { Observable, combineLatest } from "rxjs";
 import { distinctUntilChanged, map } from "rxjs/operators";
 
-// Deep equality check (duplicated to keep helpers independent)
-function deepEqual(a: unknown, b: unknown): boolean {
+// Deep equality check with circular reference protection
+function deepEqual(a: unknown, b: unknown, seen = new WeakMap<object, WeakSet<object>>()): boolean {
   if (a === b) return true;
   if (a === null || b === null) return false;
   if (typeof a !== "object" || typeof b !== "object") return false;
 
+  // Circular reference protection: if we've already compared these two objects, return true
+  // (they're equal as far as we've seen, and going deeper would be infinite)
+  const seenWithA = seen.get(a as object);
+  if (seenWithA?.has(b as object)) return true;
+  
+  // Track this comparison
+  if (!seen.has(a as object)) {
+    seen.set(a as object, new WeakSet());
+  }
+  seen.get(a as object)!.add(b as object);
+
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
-    return a.every((item, i) => deepEqual(item, b[i]));
+    return a.every((item, i) => deepEqual(item, b[i], seen));
   }
 
   if (Array.isArray(a) !== Array.isArray(b)) return false;
@@ -26,7 +37,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
   if (keysA.length !== keysB.length) return false;
 
   return keysA.every((key) =>
-    deepEqual((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])
+    deepEqual((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key], seen)
   );
 }
 

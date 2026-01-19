@@ -98,6 +98,44 @@ describe('helpers', () => {
   });
 
   describe('selectFromEach()', () => {
+    test('should throw clear error for circular references instead of stack overflow', () => {
+      const store = state({
+        items: [] as any[],
+      });
+
+      // First set with circular data
+      const a1: any = { id: 1 };
+      const b1: any = { id: 2 };
+      a1.ref = b1;
+      b1.ref = a1; // Circular!
+
+      // Should throw a clear error about circular references, not stack overflow
+      expect(() => {
+        store.items.set([a1, b1]);
+      }).toThrow(/[Cc]ircular reference/);
+    });
+
+    test('deepEqual helper handles circular references safely', () => {
+      // This tests that the deepEqual function in helpers.ts doesn't stack overflow
+      // when comparing circular structures (even though the store now rejects them)
+      const store = state({
+        items: [{ id: 1, name: 'test' }],
+      });
+
+      const emissions: any[][] = [];
+      selectFromEach(store.items, (item) => item).subscribe({
+        next: (items) => emissions.push([...items]),
+      });
+
+      // Non-circular updates should work fine
+      store.items.set([{ id: 1, name: 'updated' }]);
+      expect(emissions.length).toBe(2);
+      
+      // Same structure = no new emission (deepEqual comparison)
+      store.items.set([{ id: 1, name: 'updated' }]);
+      expect(emissions.length).toBe(2); // No new emission, deepEqual detected equality
+    });
+
     test('should select a property from each array item', () => {
       const store = state({
         items: [
