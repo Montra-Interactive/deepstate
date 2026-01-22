@@ -2,6 +2,7 @@
 # Coverage configuration
 coverage = false
 coverageDir = "coverage"
+preload = ["packages/react/tests/setup.ts"]
 
 # Test timeout in milliseconds
 timeout = 5000

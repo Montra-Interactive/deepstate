@@ -841,4 +841,231 @@ describe("stack overflow prevention", () => {
 
     expect(screen.getByTestId("list").textContent).toBe("10 items, selected: 5");
   });
+
+  test("should not cause infinite render loop when subscribing to root store", async () => {
+    const { array } = await import("deepstate");
+
+    // Replicate TTS player store structure
+    const store = state({
+      isPlaying: false,
+      isPaused: false,
+      isLoading: false,
+      isScrubbing: false,
+      isInitializing: true,
+      globalTimeMs: 0,
+      totalDurationMs: 0,
+      scenes: array([] as { sceneId: string; ttsJobId: string; durationMs: number }[], { distinct: "deep" }),
+      triggerMode: "CHAINED",
+      wasPlayingBeforeScrub: false,
+      scrubTargetSceneIndex: null as number | null,
+      error: null as { message: string } | null,
+      selectedSceneId: null as string | null,
+    });
+
+    let renderCount = 0;
+
+    function StoryboardScrubber() {
+      renderCount++;
+      
+      // This is the problematic pattern - subscribing to entire root store
+      const {
+        isPlaying,
+        isPaused,
+        globalTimeMs,
+        totalDurationMs,
+        scenes,
+      } = useSelect(store);
+
+      return (
+        <div data-testid="scrubber">
+          {isPlaying ? "playing" : "stopped"} | {globalTimeMs}/{totalDurationMs} | {scenes.length} scenes
+        </div>
+      );
+    }
+
+    await act(async () => {
+      render(<StoryboardScrubber />);
+    });
+
+    const initialRenderCount = renderCount;
+    
+    // Initial render should be 1-2 (React StrictMode may cause 2)
+    expect(initialRenderCount).toBeLessThanOrEqual(2);
+
+    // Simulate rapid updates like audio timeupdate (every 250ms during playback)
+    await act(async () => {
+      for (let i = 0; i < 10; i++) {
+        store.globalTimeMs.set(i * 250);
+      }
+    });
+
+    // After 10 updates, we should have at most ~12-14 renders (initial + 10 updates + some buffer)
+    // If there's an infinite loop, renderCount would be much higher
+    const finalRenderCount = renderCount;
+    
+    // The key assertion: render count should be reasonable, not exploding
+    expect(finalRenderCount).toBeLessThan(50);
+    
+    console.log(`Render count: initial=${initialRenderCount}, final=${finalRenderCount}`);
+  });
+
+  test("should not re-render when store emits same values (Object.is issue)", async () => {
+    const store = state({
+      count: 0,
+      name: "test",
+    });
+
+    let renderCount = 0;
+
+    function Component() {
+      renderCount++;
+      const { count, name } = useSelect(store);
+      return <div data-testid="value">{count} - {name}</div>;
+    }
+
+    await act(async () => {
+      render(<Component />);
+    });
+
+    const afterInitialRender = renderCount;
+
+    // Set the SAME values - this should NOT cause a re-render
+    await act(async () => {
+      store.count.set(0);  // Same value
+      store.name.set("test");  // Same value
+    });
+
+    const afterSameValues = renderCount;
+
+    // Setting same values should not increase render count significantly
+    // (might be 1 extra due to how React batches, but not many)
+    expect(afterSameValues - afterInitialRender).toBeLessThanOrEqual(2);
+
+    console.log(`Render count: initial=${afterInitialRender}, afterSameValues=${afterSameValues}`);
+  });
+
+  test("root store observable emits new object reference when any field changes", async () => {
+    // This test verifies that root store emits new object references
+    const store = state({
+      a: 1,
+      b: 2,
+    });
+
+    const emissions: unknown[] = [];
+    
+    // Subscribe directly to the store's observable
+    const sub = store.subscribe((value) => {
+      emissions.push(value);
+    });
+
+    // Change field 'b' - this should cause a new emission with new object reference
+    store.b.set(3);
+    
+    sub.unsubscribe();
+
+    expect(emissions.length).toBe(2);
+    
+    const first = emissions[0];
+    const second = emissions[1];
+    
+    // They should be different references
+    const areSameReference = first === second;
+    
+    console.log(`Emissions are same reference: ${areSameReference}`);
+    console.log(`First:`, first);
+    console.log(`Second:`, second);
+    
+    // Root store creates new object on each emission
+    expect(areSameReference).toBe(false);
+  });
+
+  test("useSelect on root store re-renders on every field change due to Object.is", async () => {
+    // This test demonstrates the render loop issue
+    const store = state({
+      fieldA: 0,
+      fieldB: 0,
+    });
+
+    let renderCount = 0;
+
+    function Component() {
+      renderCount++;
+      const { fieldA, fieldB } = useSelect(store);
+      return <div data-testid="value">{fieldA}-{fieldB}</div>;
+    }
+
+    await act(async () => {
+      render(<Component />);
+    });
+
+    const afterInitialRender = renderCount;
+
+    // Rapidly update ONE field multiple times (simulating timeupdate events)
+    await act(async () => {
+      for (let i = 1; i <= 10; i++) {
+        store.fieldA.set(i);
+      }
+    });
+
+    const afterUpdates = renderCount;
+
+    console.log(`Render count after rapid updates: initial=${afterInitialRender}, final=${afterUpdates}`);
+    
+    // Each update to fieldA causes a new object emission from root store
+    // useSelect uses Object.is which always returns false for different object refs
+    // So we expect ~11 renders (1 initial + 10 updates)
+    // This is expected behavior, but if batching fails, it could be much higher
+    expect(afterUpdates).toBeLessThanOrEqual(15); // Allow some buffer for React batching
+  });
+
+  test("demonstrates the subscription cascade issue", async () => {
+    const { array } = await import("deepstate");
+    
+    // Create a store similar to TTS player
+    const store = state({
+      isPlaying: false,
+      globalTimeMs: 0,
+      scenes: array([] as { id: string }[], { distinct: "deep" }),
+    });
+
+    let subscribeCallCount = 0;
+    let renderCount = 0;
+
+    // Patch the store's subscribe to count calls
+    const originalSubscribe = store.subscribe.bind(store);
+    (store as any).subscribe = function(callback: any) {
+      subscribeCallCount++;
+      return originalSubscribe(callback);
+    };
+
+    function Component() {
+      renderCount++;
+      const { isPlaying, globalTimeMs } = useSelect(store);
+      return <div data-testid="value">{isPlaying ? "playing" : "stopped"} - {globalTimeMs}</div>;
+    }
+
+    await act(async () => {
+      render(<Component />);
+    });
+
+    console.log(`After initial render: subscribeCount=${subscribeCallCount}, renderCount=${renderCount}`);
+
+    const initialSubscribeCount = subscribeCallCount;
+    const initialRenderCount = renderCount;
+
+    // Simulate timeupdate events during playback
+    await act(async () => {
+      store.isPlaying.set(true);
+      for (let i = 1; i <= 5; i++) {
+        store.globalTimeMs.set(i * 250);
+      }
+    });
+
+    console.log(`After updates: subscribeCount=${subscribeCallCount}, renderCount=${renderCount}`);
+
+    // Key check: subscriptions should not grow unboundedly
+    // If there's a loop, subscribeCallCount would be much higher than expected
+    expect(subscribeCallCount - initialSubscribeCount).toBeLessThan(10);
+    expect(renderCount - initialRenderCount).toBeLessThan(20);
+  });
 });
