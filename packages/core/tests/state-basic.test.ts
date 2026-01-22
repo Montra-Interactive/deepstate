@@ -94,18 +94,18 @@ describe('state basic operations', () => {
     expect(store.level1.level2.level3.level4.value.get()).toBe('deeper');
   });
 
-  test('should freeze emitted values (immutability)', () => {
+  test('should return mutable snapshots', () => {
     const store = state({
       user: { name: 'Alice' },
     });
 
-    let frozenValue: { name: string } | undefined;
+    let snapshotValue: { name: string } | undefined;
     store.user.subscribe((user) => {
-      frozenValue = user;
+      snapshotValue = user;
     });
 
-    expect(() => {
-      frozenValue!.name = 'Hacked';
-    }).toThrow();
+    snapshotValue!.name = 'Hacked';
+
+    expect(store.user.name.get()).toBe('Alice');
   });
 });

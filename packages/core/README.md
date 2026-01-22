@@ -9,7 +9,7 @@ Proxy-based reactive state management powered by RxJS. Each property is its own 
 - **Type-safe**: Full TypeScript support with inferred types
 - **RxJS native**: Every node is an Observable - use `pipe()`, `combineLatest`, etc.
 - **Batched updates**: Group multiple changes into a single emission
-- **Immutable reads**: Values are deeply frozen to prevent accidental mutations
+- **Mutable snapshots**: Reads return plain values; use `.set()` to update state
 - **Nullable objects**: First-class support for `T | null` properties with deep subscription
 - **Debug mode**: Optional logging for development
 
@@ -301,14 +301,13 @@ store.selectedId.get();   // string | null
 ### Type Exports
 
 ```ts
-import type { RxState, Draft, DeepReadonly } from "@montra-interactive/deepstate";
+import type { RxState, Draft } from "@montra-interactive/deepstate";
 ```
 
 | Type | Description |
 |------|-------------|
 | `RxState<T>` | The reactive state type returned by `state()` |
 | `Draft<T>` | Type alias for values in update callbacks |
-| `DeepReadonly<T>` | Deep readonly type for returned values |
 
 ## Architecture
 

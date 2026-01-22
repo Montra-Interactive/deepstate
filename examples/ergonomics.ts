@@ -259,13 +259,13 @@ console.log("=== 9. Type Safety ===\n");
 // appState.user.preferences.theme.set("blue");  // Error: "blue" not in "dark" | "light"
 // appState.cart.items.set("not an array");  // Error: string not assignable to array
 
-// Readonly emitted values - these would error at compile time AND runtime:
+// Emitted values are mutable snapshots - use .set() to update state:
 // appState.user.subscribe((user) => {
-//   user.name = "Hacked";  // Error: Cannot assign to 'name' because it is a read-only property
+//   user.name = "Hacked";  // Allowed, but won't update the store
 // });
 
 console.log("✓ TypeScript catches invalid assignments at compile time");
-console.log("✓ Emitted values are DeepReadonly - mutations blocked at runtime too");
+console.log("✓ Emitted values are mutable snapshots (mutations do not update state)");
 console.log("");
 
 // =============================================================================
