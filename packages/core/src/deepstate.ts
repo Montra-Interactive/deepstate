@@ -76,35 +76,6 @@ function countedDistinctUntilChanged<T>(compareFn?: (a: T, b: T) => boolean) {
 }
 
 // =============================================================================
-// Deep Freeze
-// =============================================================================
-
-function deepFreezeImpl<T>(obj: T, seen: WeakSet<object>): T {
-  if (obj === null || typeof obj !== "object") return obj;
-  if (Object.isFrozen(obj)) return obj;
-
-  // Circular reference protection
-  if (seen.has(obj as object)) return obj;
-  seen.add(obj as object);
-
-  Object.freeze(obj);
-
-  if (Array.isArray(obj)) {
-    obj.forEach((item) => deepFreezeImpl(item, seen));
-  } else {
-    Object.keys(obj).forEach((key) => {
-      deepFreezeImpl((obj as Record<string, unknown>)[key], seen);
-    });
-  }
-
-  return obj;
-}
-
-function deepFreeze<T>(obj: T): T {
-  return deepFreezeImpl(obj, new WeakSet<object>());
-}
-
-// =============================================================================
 // Types
 // =============================================================================
 
@@ -131,16 +102,9 @@ type IsNullableObject<T> = IsNullish<T> extends true
   : false;
 
 /**
- * Deep readonly type - makes all nested properties readonly.
- * Used for return types of get() and subscribe() to prevent accidental mutations.
+ * Type alias for values returned by get() and subscribe().
  */
-export type DeepReadonly<T> = [T] extends [Primitive]
-  ? T
-  : [T] extends [Array<infer U>]
-    ? ReadonlyArray<DeepReadonly<U>>
-    : [T] extends [object]
-      ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
-      : T;
+export type DeepReadonly<T> = T;
 
 /**
  * A mutable draft of state T for use in update callbacks.
@@ -159,21 +123,21 @@ interface NodeCore<T> {
 const NODE = Symbol("node");
 
 // External API types
-type RxLeaf<T> = Observable<DeepReadonly<T>> & {
+type RxLeaf<T> = Observable<T> & {
   /** Get current value synchronously */
-  get(): DeepReadonly<T>;
+  get(): T;
   /** Set value */
   set(value: T): void;
   /** Subscribe to a single emission, then automatically unsubscribe */
-  subscribeOnce(callback: (value: DeepReadonly<T>) => void): Subscription;
+  subscribeOnce(callback: (value: T) => void): Subscription;
   [NODE]: NodeCore<T>;
 };
 
 type RxObject<T extends object> = {
   [K in keyof T]: RxNodeFor<T[K]>;
-} & Observable<DeepReadonly<T>> & {
+} & Observable<T> & {
   /** Get current value synchronously */
-  get(): DeepReadonly<T>;
+  get(): T;
   /** Set value */
   set(value: T): void;
   /** 
@@ -186,15 +150,15 @@ type RxObject<T extends object> = {
    *   draft.age.set(31);
    * });
    */
-  update(callback: (draft: RxObject<T>) => void): DeepReadonly<T>;
+  update(callback: (draft: RxObject<T>) => void): T;
   /** Subscribe to a single emission, then automatically unsubscribe */
-  subscribeOnce(callback: (value: DeepReadonly<T>) => void): Subscription;
+  subscribeOnce(callback: (value: T) => void): Subscription;
   [NODE]: NodeCore<T>;
 };
 
-type RxArray<T> = Observable<DeepReadonly<T[]>> & {
+type RxArray<T> = Observable<T[]> & {
   /** Get current value synchronously */
-  get(): DeepReadonly<T[]>;
+  get(): T[];
   /** Set value */
   set(value: T[]): void;
   /** 
@@ -207,9 +171,9 @@ type RxArray<T> = Observable<DeepReadonly<T[]>> & {
    *   draft.push({ id: 2, name: "New" });
    * });
    */
-  update(callback: (draft: RxArray<T>) => void): DeepReadonly<T[]>;
+  update(callback: (draft: RxArray<T>) => void): T[];
   /** Subscribe to a single emission, then automatically unsubscribe */
-  subscribeOnce(callback: (value: DeepReadonly<T[]>) => void): Subscription;
+  subscribeOnce(callback: (value: T[]) => void): Subscription;
   /** Get reactive node for array element at index */
   at(index: number): RxNodeFor<T> | undefined;
   /** Get current length (also observable) */
@@ -217,11 +181,11 @@ type RxArray<T> = Observable<DeepReadonly<T[]>> & {
   /** Push items and return new length */
   push(...items: T[]): number;
   /** Pop last item */
-  pop(): DeepReadonly<T> | undefined;
+  pop(): T | undefined;
   /** Map over current values (non-reactive, use .subscribe for reactive) */
-  map<U>(fn: (item: DeepReadonly<T>, index: number) => U): U[];
+  map<U>(fn: (item: T, index: number) => U): U[];
   /** Filter current values */
-  filter(fn: (item: DeepReadonly<T>, index: number) => boolean): DeepReadonly<T>[];
+  filter(fn: (item: T, index: number) => boolean): T[];
   [NODE]: NodeCore<T[]>;
 };
 
@@ -246,13 +210,13 @@ type RxArray<T> = Observable<DeepReadonly<T[]>> & {
  * store.user.name.get();               // "Alice"
  * store.user.name.set("Bob");          // Works!
  */
-type RxNullable<T, TNonNull extends object = NonNullablePart<T> & object> = Observable<DeepReadonly<T>> & {
+type RxNullable<T, TNonNull extends object = NonNullablePart<T> & object> = Observable<T> & {
   /** Get current value (may be null/undefined) */
-  get(): DeepReadonly<T>;
+  get(): T;
   /** Set value (can be null/undefined or the full object) */
   set(value: T): void;
   /** Subscribe to a single emission, then automatically unsubscribe */
-  subscribeOnce(callback: (value: DeepReadonly<T>) => void): Subscription;
+  subscribeOnce(callback: (value: T) => void): Subscription;
   /**
    * Update multiple properties in a single emission.
    * @example
@@ -261,7 +225,7 @@ type RxNullable<T, TNonNull extends object = NonNullablePart<T> & object> = Obse
    *   user.age.set(31);
    * });
    */
-  update(callback: (draft: RxObject<TNonNull>) => void): DeepReadonly<T>;
+  update(callback: (draft: RxObject<TNonNull>) => void): T;
   [NODE]: NodeCore<T>;
 } & {
   /** 
@@ -299,10 +263,10 @@ type RxNullableChild<T> =
  * The object itself might be undefined (if parent is null), but if present
  * it has all the normal object methods and children.
  */
-type RxNullableChildObject<T extends object> = Observable<DeepReadonly<T> | undefined> & {
-  get(): DeepReadonly<T> | undefined;
+type RxNullableChildObject<T extends object> = Observable<T | undefined> & {
+  get(): T | undefined;
   set(value: T): void;
-  subscribeOnce(callback: (value: DeepReadonly<T> | undefined) => void): Subscription;
+  subscribeOnce(callback: (value: T | undefined) => void): Subscription;
   [NODE]: NodeCore<T | undefined>;
 } & {
   [K in keyof T]: RxNullableChild<T[K]>;
@@ -411,13 +375,10 @@ function createObjectNode<T extends object>(value: T): NodeCore<T> & {
   // Force subscription to make it hot (so emissions work even before external subscribers)
   $.subscribe();
 
-  // Create a version that freezes on emission
-  const frozen$ = $.pipe(map(deepFreeze));
-
   return {
-    $: frozen$,
+    $,
     children: children as Map<string, NodeCore<unknown>>,
-    get: () => deepFreeze(getCurrentValue()),
+    get: () => getCurrentValue(),
     set: (v: T) => {
       for (const [key, child] of children) {
         child.set(v[key]);
@@ -427,7 +388,7 @@ function createObjectNode<T extends object>(value: T): NodeCore<T> & {
     unlock: () => lock$.next(true),
     // Note: update() is implemented in wrapWithProxy since it needs the proxy reference
     subscribeOnce: (callback: (value: T) => void): Subscription => {
-      return frozen$.pipe(take(1)).subscribe(callback);
+      return $.pipe(take(1)).subscribe(callback);
     },
   };
 }
@@ -496,11 +457,11 @@ function createArrayNode<T>(
   );
   
   // Apply distinct comparison if provided
-  const locked$ = (comparator 
+  const locked$ = (comparator
     ? baseLocked$.pipe(distinctUntilChanged(comparator))
     : baseLocked$
   ).pipe(
-    map(deepFreeze),
+    map((arr) => [...arr]),
     shareReplay(1)
   );
   locked$.subscribe(); // Keep hot
@@ -520,7 +481,7 @@ function createArrayNode<T>(
   return {
     $: locked$ as Observable<T[]>,
     childCache,
-    get: () => deepFreeze([...subject$.getValue()]) as T[],
+    get: () => [...subject$.getValue()] as T[],
     set: (v: T[]) => {
       // Check for circular references in array items
       if (hasCircularReference(v)) {
@@ -560,13 +521,13 @@ function createArrayNode<T>(
       // Clear cached node for popped index
       childCache.delete(current.length - 1);
       subject$.next(current.slice(0, -1));
-      return deepFreeze(last) as T;
+      return last as T;
     },
     mapItems: <U>(fn: (item: T, index: number) => U): U[] => {
-      return subject$.getValue().map((item, i) => fn(deepFreeze(item) as T, i));
+      return subject$.getValue().map((item, i) => fn(item as T, i));
     },
     filterItems: (fn: (item: T, index: number) => boolean): T[] => {
-      return deepFreeze(subject$.getValue().filter((item, i) => fn(deepFreeze(item) as T, i))) as T[];
+      return subject$.getValue().filter((item, i) => fn(item as T, i)) as T[];
     },
     lock: () => lock$.next(false),
     unlock: () => lock$.next(true),
@@ -668,7 +629,6 @@ function createNullableObjectNode<T>(
       if (b === null || b === undefined) return false;
       return JSON.stringify(a) === JSON.stringify(b);
     }),
-    map(deepFreeze),
     shareReplay(1)
   );
   $.subscribe(); // Keep hot
@@ -711,7 +671,7 @@ function createNullableObjectNode<T>(
     $,
     get children() { return nodeState.children; },
     
-    get: () => deepFreeze(getCurrentValue()),
+    get: () => getCurrentValue(),
     
     set: (value: T) => {
       if (value === null || value === undefined) {

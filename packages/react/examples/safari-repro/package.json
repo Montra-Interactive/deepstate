@@ -1,0 +1,10 @@
+{
+  "name": "safari-repro",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "rxjs": "^7.8.0"
+  }
+}

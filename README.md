@@ -9,7 +9,7 @@ Proxy-based reactive state management powered by RxJS. Each property is its own 
 - **Type-safe**: Full TypeScript support with inferred types
 - **RxJS native**: Every node is an Observable - use `pipe()`, `combineLatest`, etc.
 - **Batched updates**: Group multiple changes into a single emission
-- **Immutable reads**: Values are deeply frozen to prevent accidental mutations
+- **Mutable snapshots**: Reads return plain values; use `.set()` to update state
 - **Nullable objects**: First-class support for `T | null` properties
 
 ## Installation
@@ -393,16 +393,16 @@ const doubled = (filtered ?? 0) * 2;  // Must handle undefined
 
 For comprehensive React documentation, see [React Integration Guide](./docs/REACT.md).
 
-## Immutability
+## Snapshots
 
-Values returned by `.get()` and emitted by subscriptions are deeply frozen:
+Values returned by `.get()` and emitted by subscriptions are mutable snapshots:
 
 ```ts
 const user = store.user.get();
-user.name = "Bob"; // Error: Cannot assign to read only property
+user.name = "Bob"; // Does not update the store
 ```
 
-This prevents accidental mutations. Always use `.set()` to update values.
+Always use `.set()` to update values.
 
 ## Architecture
 
@@ -474,16 +474,16 @@ deepstate requires explicit `.set()` calls:
 const store = state({ user: { name: "Alice" } });
 store.user.name.set("Bob"); // Explicit - you know state is changing here
 
-// Values are frozen - accidental mutation throws
+// Values are snapshots - mutations won't update the store
 const user = store.user.get();
-user.name = "Bob"; // Error: Cannot assign to read only property
+user.name = "Bob"; // No effect on state
 ```
 
 | Aspect | Valtio | deepstate |
 |--------|--------|-----------|
 | Mutation style | Implicit (just assign) | Explicit (`.set()`) |
 | Change tracking | Hard to trace | Grep for `.set(` |
-| Accidental mutations | Possible | Prevented (frozen values) |
+| Accidental mutations | Possible | Possible (mutable snapshots) |
 | Learning curve | Lower | Slightly higher |
 | Large codebase | Can get messy | Predictable |
 
@@ -504,7 +504,7 @@ store.user.age.get();   // number
 store.items.at(0)?.id;  // RxLeaf<number> | undefined
 
 // Type exports for advanced use cases
-import type { RxState, Draft, DeepReadonly } from "deepstate";
+import type { RxState, Draft } from "deepstate";
 ```
 
 ## API Reference
