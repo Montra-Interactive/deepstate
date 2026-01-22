@@ -258,7 +258,7 @@ store.user.nonexistent.get();   // Error: property doesn't exist
 const state = proxy({ user: { name: "Alice" } });
 
 state.user.name = "Bob";        // Works, typed
-const snap = snapshot(state);   // Readonly snapshot
+const snap = snapshot(state);   // DeepReadonly<...>
 snap.user.name = "X";           // Runtime error, not always caught
 ```
 
@@ -509,13 +509,13 @@ const [name, data] = await firstValueFrom(
 );
 ```
 
-### 4. Snapshot Values
+### 4. Frozen Emissions
 
-Emitted values are plain snapshots - mutations do not update state:
+Emitted values are deeply frozen - mutations are errors, not silent bugs:
 
 ```typescript
 store.user.subscribe(user => {
-  user.name = "Hacked";  // No effect on state
+  user.name = "Hacked";  // TypeError: Cannot assign to read only property
 });
 ```
 

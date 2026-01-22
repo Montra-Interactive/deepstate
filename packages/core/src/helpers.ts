@@ -137,7 +137,7 @@ export function select(
  * @returns An Observable that emits an array of selected values
  */
 export function selectFromEach<T, U>(
-  arrayNode: Observable<T[]>,
+  arrayNode: Observable<ReadonlyArray<T>>,
   selector: (item: T, index: number) => U
 ): Observable<U[]> {
   return arrayNode.pipe(

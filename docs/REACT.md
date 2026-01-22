@@ -487,7 +487,7 @@ const store = state({
 // Primitive: number
 const count = useSelect(store.count);
 
-// Object: { name: string; age: number }
+// Object: { readonly name: string; readonly age: number }
 const user = useSelect(store.user);
 
 // With selector: string
@@ -671,5 +671,5 @@ store.user.name.set('Bob');  // This triggers user update!
 
 // If not updating, check you're calling .set() correctly:
 store.user.name.set('Bob');  // ✅ Correct
-store.user.name = 'Bob';     // ❌ Won't update state (snapshot value)
+store.user.name = 'Bob';     // ❌ Won't work (values are frozen)
 ```

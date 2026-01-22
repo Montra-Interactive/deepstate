@@ -76,9 +76,13 @@ state.items.at(500).update(draft => {
 state.items.at(500).value.set('x');
 ```
 
-### 4. Snapshot Emissions ✅
+### 4. deepFreeze on Emit ⚠️
 
-Emitted values are plain snapshots. No deep-freeze overhead is applied per emission.
+Emitted values are deep-frozen to prevent accidental mutation. This is O(n) for the emitted value.
+
+**Benchmark:** Freezing moderately nested object: ~0.6ms
+
+**Note:** Freezing happens once per emission, not per subscriber.
 
 ### 5. Multiple Subscribers ✅
 
