@@ -113,6 +113,15 @@ describe('helpers', () => {
       expect(() => {
         store.items.set([a1, b1]);
       }).toThrow(/[Cc]ircular reference/);
+
+      // Error should include the cycle path
+      let errorMessage = '';
+      try {
+        store.items.set([a1, b1]);
+      } catch (e) {
+        errorMessage = (e as Error).message;
+      }
+      expect(errorMessage).toContain('root[0].ref.ref → root[0]');
     });
 
     test('deepEqual helper handles circular references safely', () => {

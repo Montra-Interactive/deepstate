@@ -646,10 +646,19 @@ describe('stack overflow prevention', () => {
       a.ref = b;
       b.ref = a; // Circular!
 
-      // Should throw a clear error, not stack overflow
+      // Should throw a clear error with the cycle path, not stack overflow
       expect(() => {
         store.items.set([a, b]);
       }).toThrow(/[Cc]ircular reference/);
+
+      let errorMessage = '';
+      try {
+        store.items.set([a, b]);
+      } catch (e) {
+        errorMessage = (e as Error).message;
+      }
+      // Path should show where the cycle closes: root[0].ref.ref points back to root[0]
+      expect(errorMessage).toContain('root[0].ref.ref → root[0]');
     });
 
     test('should throw clear error for self-referential objects', () => {
@@ -661,9 +670,15 @@ describe('stack overflow prevention', () => {
       const obj: any = { id: 1, name: 'Self' };
       obj.self = obj;
 
-      expect(() => {
+      let errorMessage = '';
+      try {
         store.data.set(obj);
-      }).toThrow(/[Cc]ircular reference/);
+      } catch (e) {
+        errorMessage = (e as Error).message;
+      }
+      expect(errorMessage).toMatch(/[Cc]ircular reference/);
+      // Path should show the self-reference: root.self points back to root
+      expect(errorMessage).toContain('root.self → root');
     });
 
     test('should throw clear error for deeply nested circular references', () => {
@@ -679,9 +694,15 @@ describe('stack overflow prevention', () => {
       b.next = c;
       c.next = a; // Circular back to start
 
-      expect(() => {
+      let errorMessage = '';
+      try {
         store.root.set(a);
-      }).toThrow(/[Cc]ircular reference/);
+      } catch (e) {
+        errorMessage = (e as Error).message;
+      }
+      expect(errorMessage).toMatch(/[Cc]ircular reference/);
+      // Path should show the full chain closing: root.next.next.next points back to root
+      expect(errorMessage).toContain('root.next.next.next → root');
     });
 
     test('should allow non-circular nested objects', () => {
