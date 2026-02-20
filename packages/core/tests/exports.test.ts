@@ -26,6 +26,12 @@ describe('exports', () => {
     test('should export nullable function', () => {
       expect(typeof nullable).toBe('function');
     });
+
+    test('should accept options parameter', () => {
+      type State = { user: { name: string } | null };
+      const store = state<State>({ user: nullable({ name: 'Alice' }, { distinct: 'shallow' }) });
+      expect(store.user?.get()).toEqual({ name: 'Alice' });
+    });
   });
 
   describe('helpers', () => {

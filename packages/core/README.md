@@ -191,7 +191,7 @@ const store = state({
 | `"deep"` | JSON comparison: `JSON.stringify(a) === JSON.stringify(b)` |
 | `(a, b) => boolean` | Custom comparator function |
 
-### `nullable(value)` - Nullable Objects
+### `nullable(value, options?)` - Nullable Objects
 
 For properties that can be `null` or an object:
 
@@ -204,6 +204,9 @@ const store = state({
   
   // Start as object, can become null
   profile: nullable({ bio: "Hello", avatar: "url" }),
+
+  // With distinct option to control emission deduplication
+  settings: nullable({ theme: "dark" }, { distinct: "shallow" }),
 });
 
 // Deep subscription works even when null!
@@ -216,6 +219,17 @@ store.user.set({ name: "Alice", age: 30 });  // Now has value
 store.user.name.set("Bob");                   // Update nested
 store.user.set(null);                         // Back to null
 ```
+
+**Distinct Options:**
+
+| Value | Description |
+|-------|-------------|
+| `false` | No deduplication (always emits on set) |
+| `"shallow"` | Shallow key-by-key `===` comparison |
+| `"deep"` | JSON comparison: `JSON.stringify(a) === JSON.stringify(b)` (same as default) |
+| `(a, b) => boolean` | Custom comparator; `a`/`b` may be `null` |
+
+Without options, nullable nodes use `JSON.stringify` deduplication by default.
 
 ### `select(...observables)` - Combine Observables
 

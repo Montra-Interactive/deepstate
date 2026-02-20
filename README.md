@@ -201,6 +201,9 @@ const store = state({
   
   // With nullable(): can transition to null
   user: nullable({ name: "Alice", age: 30 }),
+
+  // With distinct option to control emission deduplication
+  settings: nullable({ theme: "dark" }, { distinct: "shallow" }),
 });
 
 store.user.set(null);  // Works!
@@ -215,6 +218,8 @@ store.user.update(user => {
   user.age.set(31);
 });
 ```
+
+The optional second argument accepts a `distinct` option — identical in shape to the `array()` helper — to control how emissions are deduplicated: `false` (always emit), `'shallow'` (key-by-key `===`), `'deep'` (JSON comparison), or a custom `(a, b) => boolean` comparator. Without options, nullable nodes default to `JSON.stringify` deduplication.
 
 ## Helpers
 
@@ -514,7 +519,7 @@ import type { RxState, Draft } from "deepstate";
 | Export | Description |
 |--------|-------------|
 | `state(init)` | Create reactive state |
-| `nullable(value)` | Mark object as nullable |
+| `nullable(value, options?)` | Mark object as nullable |
 | `select(...obs)` | Combine observables |
 | `selectFromEach(arr, selector)` | Select from array items |
 
