@@ -12,5 +12,5 @@
  * - selectFromEach() - Select from each array item with precise change detection
  */
 
-export { state, nullable, array, type RxState, type Draft, type StateOptions, type ArrayOptions, type ArrayDistinct } from "./deepstate";
+export { state, nullable, array, type RxState, type Draft, type StateOptions, type ArrayOptions, type ArrayDistinct, type NullableOptions, type NullableDistinct } from "./deepstate";
 export { select, selectFromEach } from "./helpers";

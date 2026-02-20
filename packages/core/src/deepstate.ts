@@ -567,7 +567,8 @@ interface NullableNodeCore<T> extends NodeCore<T> {
  * When value is set to object: children are created lazily from the object's keys
  */
 function createNullableObjectNode<T>(
-  initialValue: T
+  initialValue: T,
+  comparator?: false | ((a: T, b: T) => boolean),
 ): NullableNodeCore<T> {
   // Subject holds the raw value (null or object)
   const subject$ = new BehaviorSubject<T>(initialValue);
@@ -612,7 +613,7 @@ function createNullableObjectNode<T>(
   };
   
   // Observable that emits the current value, respecting lock
-  const $ = combineLatest([subject$, lock$]).pipe(
+  const baseLocked$ = combineLatest([subject$, lock$]).pipe(
     filter(([_, unlocked]) => unlocked),
     map(([value, _]) => {
       if (value === null || value === undefined || !children) {
@@ -625,11 +626,15 @@ function createNullableObjectNode<T>(
       }
       return result as T;
     }),
-    distinctUntilChanged((a, b) => {
-      if (a === null || a === undefined) return a === b;
-      if (b === null || b === undefined) return false;
-      return JSON.stringify(a) === JSON.stringify(b);
-    }),
+  );
+
+  // Apply distinct comparison: use provided comparator, fall back to default, or skip entirely
+  const $ = (comparator === undefined
+    ? baseLocked$.pipe(distinctUntilChanged(nullableDeepComparator))
+    : comparator
+      ? baseLocked$.pipe(distinctUntilChanged(comparator))
+      : baseLocked$
+  ).pipe(
     shareReplay(1)
   );
   $.subscribe(); // Keep hot
@@ -1082,9 +1087,16 @@ function findCircularReference(
 function createNodeForValue<T>(value: T, maybeNullable: boolean = false): NodeCore<T> {
   // Check for nullable marker (from nullable() helper)
   if (isNullableMarked(value)) {
+    const options = getNullableMarkerOptions(value);
+    const comparator = getNullableComparator(options);
     // Remove the marker before creating the node
     delete (value as Record<symbol, unknown>)[NULLABLE_MARKER];
-    return createNullableObjectNode(value) as NodeCore<T>;
+    // If the marked value was a sentinel for nullable(null, options), it has no
+    // own enumerable keys after stripping the marker — pass null as initial value.
+    const initialValue = Object.keys(value as object).length === 0
+      ? null as unknown as T
+      : value;
+    return createNullableObjectNode(initialValue, comparator) as NodeCore<T>;
   }
   
   if (value === null || value === undefined) {
@@ -1409,6 +1421,64 @@ export function state<T extends object>(initialState: T, options?: StateOptions)
 // Symbol to mark a value as nullable
 const NULLABLE_MARKER = Symbol("nullable");
 
+/** Comparison mode for nullable object distinct checking */
+export type NullableDistinct<T> =
+  | false              // No deduplication (always emits on set)
+  | 'shallow'          // Shallow key-by-key === comparison
+  | 'deep'             // JSON.stringify comparison (same as default behavior without options)
+  | ((a: T | null, b: T | null) => boolean);  // Custom comparator
+
+/** Options for the nullable() helper */
+export interface NullableOptions<T> {
+  /**
+   * How to compare nullable object values to prevent duplicate emissions.
+   * - false: No deduplication (always emits on set)
+   * - 'shallow': Shallow key-by-key === comparison
+   * - 'deep': JSON.stringify comparison (default behavior without options)
+   * - function: Custom comparator (a, b) => boolean where a/b may be null
+   */
+  distinct?: NullableDistinct<T>;
+}
+
+// Null-safe JSON.stringify comparator, shared between default behavior and distinct: 'deep'
+function nullableDeepComparator<T>(a: T, b: T): boolean {
+  if (a === null || a === undefined) return a === b;
+  if (b === null || b === undefined) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// Get the distinct comparator function from nullable options
+// Returns undefined to use default (JSON.stringify), false to disable, or a function for custom comparison
+function getNullableComparator<T>(options: NullableOptions<T>): false | ((a: T, b: T) => boolean) | undefined {
+  if (options.distinct === undefined) return undefined;
+  if (options.distinct === false) return false;
+
+  if (options.distinct === 'shallow') {
+    return (a, b) => {
+      if (a === null || a === undefined) return a === b;
+      if (b === null || b === undefined) return false;
+      if (typeof a !== 'object' || typeof b !== 'object') return a === b;
+      const aKeys = Object.keys(a);
+      const bKeys = Object.keys(b);
+      if (aKeys.length !== bKeys.length) return false;
+      return aKeys.every(key =>
+        (a as Record<string, unknown>)[key] === (b as Record<string, unknown>)[key]
+      );
+    };
+  }
+
+  if (options.distinct === 'deep') {
+    return nullableDeepComparator;
+  }
+
+  // Custom function — wrap to match the (a: T, b: T) => boolean signature
+  const customFn = options.distinct;
+  return (a, b) => customFn(a as T | null, b as T | null);
+}
+
+interface MarkedNullable<T> {
+  [NULLABLE_MARKER]: NullableOptions<T>;
+}
 
 /**
  * Marks a value as nullable, allowing it to transition between null and object.
@@ -1420,6 +1490,8 @@ const NULLABLE_MARKER = Symbol("nullable");
  *   user: nullable({ name: "Alice", age: 30 }),
  *   // Can start with null and later be set to object  
  *   profile: nullable<{ bio: string }>(null),
+ *   // With distinct option to control emission deduplication
+ *   settings: nullable({ theme: 'dark', lang: 'en' }, { distinct: 'shallow' }),
  * });
  * 
  * // Use ?. on the nullable property, then access children directly
@@ -1427,17 +1499,37 @@ const NULLABLE_MARKER = Symbol("nullable");
  * store.user?.set({ name: "Bob", age: 25 });  // Works!
  * store.user?.name.set("Charlie");  // After ?. on user, children are directly accessible
  */
-export function nullable<T extends object>(value: T | null): T | null {
+export function nullable<T extends object>(value: T | null, options: NullableOptions<T> = {}): T | null {
   if (value === null) {
+    // For null values, we can't attach the marker to the value itself.
+    // We store options on a sentinel object that createNodeForValue will check.
+    if (Object.keys(options).length > 0) {
+      // Store options in a module-level map keyed by a unique object
+      // The caller will pass this null through state(), and createNodeForValue
+      // will receive maybeNullable=true for null children of nullable parents.
+      // For top-level nullable(null, options), we need a different approach:
+      // return a special marker object that looks null-ish but carries options.
+      const marker = Object.create(null) as MarkedNullable<T>;
+      marker[NULLABLE_MARKER] = options;
+      return marker as unknown as T | null;
+    }
     return null;
   }
   // Mark the object so createNodeForValue knows to use NullableNodeCore
-  return Object.assign(value, { [NULLABLE_MARKER]: true }) as T | null;
+  return Object.assign(value, { [NULLABLE_MARKER]: options }) as T | null;
 }
 
 // Check if a value was marked as nullable
 function isNullableMarked<T>(value: T): boolean {
   return value !== null && typeof value === "object" && NULLABLE_MARKER in value;
+}
+
+// Extract options from a nullable-marked value
+function getNullableMarkerOptions<T>(value: T): NullableOptions<T> {
+  if (value !== null && typeof value === "object" && NULLABLE_MARKER in value) {
+    return (value as unknown as MarkedNullable<T>)[NULLABLE_MARKER];
+  }
+  return {};
 }
 
 // Symbol to mark an array with distinct options
