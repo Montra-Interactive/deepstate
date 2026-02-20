@@ -484,9 +484,10 @@ function createArrayNode<T>(
     get: () => [...subject$.getValue()] as T[],
     set: (v: T[]) => {
       // Check for circular references in array items
-      if (hasCircularReference(v)) {
+      const arrayCircularPath = findCircularReference(v);
+      if (arrayCircularPath !== null) {
         throw new Error(
-          'Circular reference detected in array value. ' +
+          `Circular reference detected in array value at path: ${arrayCircularPath}. ` +
           'Deepstate does not support circular references. ' +
           'Please flatten your data structure or remove the circular reference.'
         );
@@ -1043,17 +1044,36 @@ function createNestedArrayProjection<T>(
   };
 }
 
-// Helper to detect circular references in an object
-function hasCircularReference(obj: unknown, seen = new WeakSet<object>()): boolean {
-  if (obj === null || typeof obj !== 'object') return false;
-  if (seen.has(obj as object)) return true;
-  seen.add(obj as object);
-  
-  if (Array.isArray(obj)) {
-    return obj.some(item => hasCircularReference(item, seen));
+// Helper to detect circular references in an object.
+// Returns a string describing the cycle path (e.g. "root.next.next → root") or null if none found.
+// Uses DFS with backtracking: only objects on the current ancestor path are in `seen`,
+// so shared (but non-circular) references across sibling branches are not flagged.
+function findCircularReference(
+  obj: unknown,
+  currentPath: string = 'root',
+  seen: Map<object, string> = new Map()
+): string | null {
+  if (obj === null || typeof obj !== 'object') return null;
+  if (seen.has(obj as object)) {
+    return `${currentPath} → ${seen.get(obj as object)}`;
   }
-  
-  return Object.values(obj).some(value => hasCircularReference(value, seen));
+  seen.set(obj as object, currentPath);
+
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      const result = findCircularReference(obj[i], `${currentPath}[${i}]`, seen);
+      if (result !== null) return result;
+    }
+    seen.delete(obj as object);
+    return null;
+  }
+
+  for (const [key, value] of Object.entries(obj)) {
+    const result = findCircularReference(value, `${currentPath}.${key}`, seen);
+    if (result !== null) return result;
+  }
+  seen.delete(obj as object);
+  return null;
 }
 
 // Factory to create the right node type
@@ -1079,9 +1099,10 @@ function createNodeForValue<T>(value: T, maybeNullable: boolean = false): NodeCo
   }
   
   // Check for circular references before creating nodes
-  if (hasCircularReference(value)) {
+  const circularPath = findCircularReference(value);
+  if (circularPath !== null) {
     throw new Error(
-      'Circular reference detected in state value. ' +
+      `Circular reference detected in state value at path: ${circularPath}. ` +
       'Deepstate does not support circular references because each property becomes a reactive node. ' +
       'Please flatten your data structure or remove the circular reference.'
     );
