@@ -1046,6 +1046,8 @@ function createNestedArrayProjection<T>(
 
 // Helper to detect circular references in an object.
 // Returns a string describing the cycle path (e.g. "root.next.next → root") or null if none found.
+// Uses DFS with backtracking: only objects on the current ancestor path are in `seen`,
+// so shared (but non-circular) references across sibling branches are not flagged.
 function findCircularReference(
   obj: unknown,
   currentPath: string = 'root',
@@ -1062,6 +1064,7 @@ function findCircularReference(
       const result = findCircularReference(obj[i], `${currentPath}[${i}]`, seen);
       if (result !== null) return result;
     }
+    seen.delete(obj as object);
     return null;
   }
 
@@ -1069,6 +1072,7 @@ function findCircularReference(
     const result = findCircularReference(value, `${currentPath}.${key}`, seen);
     if (result !== null) return result;
   }
+  seen.delete(obj as object);
   return null;
 }
 

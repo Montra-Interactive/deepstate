@@ -732,4 +732,149 @@ describe('stack overflow prevention', () => {
       expect(store.data.get()).toEqual(obj);
     });
   });
+
+  describe('false positive circular reference detection', () => {
+    test('should allow shared object references across sibling branches (not circular)', () => {
+      // This is the exact pattern that caused the reported false positive:
+      // Two slides share the same color object reference — a DAG, not a cycle.
+      const sharedColor = { r: 255, g: 0, b: 0 };
+
+      const slides = [
+        { elements: [{ color: sharedColor }] },
+        { elements: [{ color: sharedColor }] },
+      ];
+
+      const store = state({
+        project: null as any,
+      });
+
+      // This should NOT throw — shared refs across siblings are not circular
+      expect(() => {
+        store.project.set({ slides });
+      }).not.toThrow();
+    });
+
+    test('should allow shared object references across array items', () => {
+      // Same object referenced from multiple array entries
+      const sharedMeta = { type: 'text', version: 2 };
+
+      const items = [
+        { id: 1, meta: sharedMeta },
+        { id: 2, meta: sharedMeta },
+        { id: 3, meta: sharedMeta },
+      ];
+
+      const store = state({
+        items: array([] as any[]),
+      });
+
+      expect(() => {
+        store.items.set(items);
+      }).not.toThrow();
+    });
+
+    test('should allow deeply nested shared references across different branches', () => {
+      // Reproduces the exact error from the bug report:
+      // root[5].output.data.projectSnapshot.project.slides[2].elements[0].color
+      //   → root[5].output.data.projectSnapshot.project.slides[1].elements[0].color
+      const sharedColor = { r: 100, g: 200, b: 50, a: 1 };
+
+      const data = Array.from({ length: 6 }, (_, i) => ({
+        id: i,
+        output: {
+          data: {
+            projectSnapshot: {
+              project: {
+                slides: [
+                  { elements: [{ color: { r: 0, g: 0, b: 0, a: 1 } }] },
+                  { elements: [{ color: sharedColor }] },
+                  { elements: [{ color: sharedColor }] }, // same ref as slides[1]
+                ],
+              },
+            },
+          },
+        },
+      }));
+
+      // Should NOT throw — shared color objects across slides are not circular
+      expect(() => {
+        state({ items: data });
+      }).not.toThrow();
+    });
+
+    test('should allow the same object used as value in multiple keys of the same parent', () => {
+      const shared = { x: 1, y: 2 };
+
+      expect(() => {
+        state({
+          positionA: shared,
+          positionB: shared,
+          positionC: shared,
+        });
+      }).not.toThrow();
+    });
+
+    test('should still detect actual circular references after allowing shared refs', () => {
+      // Ensure the fix doesn't break real cycle detection
+      const a: any = { id: 'a' };
+      const b: any = { id: 'b' };
+      a.ref = b;
+      b.ref = a; // actual cycle: a -> b -> a
+
+      expect(() => {
+        state({ root: a });
+      }).toThrow(/[Cc]ircular reference/);
+    });
+
+    test('should still detect self-referential objects after allowing shared refs', () => {
+      const obj: any = { name: 'self' };
+      obj.self = obj; // actual cycle: obj -> obj
+
+      expect(() => {
+        state({ data: obj });
+      }).toThrow(/[Cc]ircular reference/);
+    });
+
+    test('should still detect cycles through arrays after allowing shared refs', () => {
+      const parent: any = { children: [] };
+      const child: any = { parent: parent };
+      parent.children.push(child); // cycle: parent -> children[0] -> parent
+
+      expect(() => {
+        state({ root: parent });
+      }).toThrow(/[Cc]ircular reference/);
+    });
+
+    test('should allow diamond-shaped references (A->B, A->C, B->D, C->D)', () => {
+      // Classic DAG diamond — D is reachable from A via two paths, but no cycles
+      const d = { value: 'leaf' };
+      const b = { child: d };
+      const c = { child: d };
+      const a = { left: b, right: c };
+
+      expect(() => {
+        state({ root: a });
+      }).not.toThrow();
+    });
+
+    test('should allow complex shared references in array set operations', () => {
+      const store = state({
+        items: array([] as any[]),
+      });
+
+      const sharedStyle = { fontSize: 14, fontWeight: 'bold', color: { r: 0, g: 0, b: 0 } };
+
+      const items = Array.from({ length: 10 }, (_, i) => ({
+        id: i,
+        label: `Item ${i}`,
+        style: sharedStyle, // all share the same style object
+      }));
+
+      expect(() => {
+        store.items.set(items);
+      }).not.toThrow();
+
+      expect(store.items.length.get()).toBe(10);
+    });
+  });
 });
