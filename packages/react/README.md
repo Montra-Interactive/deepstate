@@ -103,15 +103,32 @@ const summary = useSelect(
 );
 ```
 
+#### Selector Memoization
+
+`useSelect` automatically memoizes selectors: the selector function only re-runs when its input values actually change (compared by reference). This means you can safely return new arrays or objects from selectors without causing infinite re-render loops:
+
+```tsx
+// Safe! The selector only re-runs when items or sortBy actually change.
+// Even though .sort() returns a new array, it won't cause infinite emissions.
+const sorted = useSelect(
+  [store.items, store.sortBy],
+  ([items, sortBy]) => Array.from(items).sort((a, b) =>
+    sortBy === 'name' ? a.name.localeCompare(b.name) : b.updatedAt - a.updatedAt
+  )
+);
+```
+
+This works like Redux's `createSelector` / Reselect — if the inputs haven't changed, the selector doesn't re-run, preserving the previous output reference.
+
 #### Custom Equality Function
 
-Prevent re-renders with a custom equality check:
+For additional control, provide a custom equality check as the third argument. This is evaluated on the selector's **output** and acts as a safety net when different inputs might produce equivalent results:
 
 ```tsx
 const ids = useSelect(
   store.items,
   items => items.map(i => i.id),
-  // Custom array equality
+  // Custom array equality on the output
   (a, b) => a.length === b.length && a.every((v, i) => v === b[i])
 );
 ```

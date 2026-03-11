@@ -248,16 +248,40 @@ function TaskSummary() {
 }
 ```
 
+#### Selector Memoization
+
+`useSelect` automatically memoizes selectors using input identity, similar to Redux's `createSelector` / Reselect. The selector function only re-executes when its input values change by reference. This means selectors that return new arrays or objects (e.g. via `.sort()`, `.filter()`, `.map()`) are safe to use without causing infinite re-render loops:
+
+```tsx
+// Safe! Selector only re-runs when items or sortBy references change.
+function SortedItems() {
+  const sorted = useSelect(
+    [store.items, store.sortBy],
+    ([items, sortBy]) =>
+      Array.from(items).sort((a, b) =>
+        sortBy === 'name'
+          ? a.name.localeCompare(b.name)
+          : new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      ),
+  );
+  return <ItemList items={sorted} />;
+}
+```
+
+The memoization works in two layers:
+1. **Input dedup** — `distinctUntilChanged` before the selector prevents re-execution when inputs are referentially identical
+2. **Output dedup** — `distinctUntilChanged(equalityFn)` after the selector catches cases where different inputs produce equivalent outputs
+
 #### Custom Equality Function
 
-By default, `useSelect` uses `Object.is` for equality checks. Provide a custom function for complex derived values:
+By default, `useSelect` uses `Object.is` for output equality checks. Because of input memoization, custom equality functions are rarely needed, but you can still provide one for cases where different inputs might produce equivalent results:
 
 ```tsx
 function TodoIds() {
   const ids = useSelect(
     store.todos,
     todos => todos.map(t => t.id),
-    // Custom equality: compare arrays by value
+    // Custom equality on the output: compare arrays by value
     (a, b) => a.length === b.length && a.every((v, i) => v === b[i])
   );
   return <span>{ids.join(', ')}</span>;
@@ -580,9 +604,35 @@ function UserAge() {
 }
 ```
 
+### Selectors Are Automatically Memoized
+
+Selectors in `useSelect` are memoized on their inputs — the selector function only re-runs when input references change. This means you can safely derive new arrays or objects without worrying about infinite loops or unnecessary re-renders:
+
+```tsx
+// ✅ Safe: .sort() creates a new array, but selector is memoized on inputs
+function SortedItems() {
+  const sorted = useSelect(
+    [store.items, store.sortBy],
+    ([items, sortBy]) => Array.from(items).sort(/* ... */)
+  );
+  return <ItemList items={sorted} />;
+}
+
+// ✅ Safe: .filter() creates a new array
+function ActiveUsers() {
+  const active = useSelect(
+    store.users,
+    users => users.filter(u => u.active)
+  );
+  return <UserList users={active} />;
+}
+```
+
+No need for `useMemo` wrapping or custom equality functions in these cases — the memoization is built into `useSelect`.
+
 ### Memoize Expensive Computations
 
-For expensive derived values, combine with `useMemo`:
+For expensive derived values outside of `useSelect`, combine with `useMemo`:
 
 ```tsx
 function ExpensiveList() {
