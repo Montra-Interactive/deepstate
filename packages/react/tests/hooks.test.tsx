@@ -522,6 +522,219 @@ describe("usePipeSelect", () => {
   });
 });
 
+describe("selector input memoization", () => {
+  test("array form: selector returning sorted array does not cause infinite emissions", async () => {
+    const { array } = await import("deepstate");
+
+    interface Item {
+      id: number;
+      name: string;
+      updatedAt: string;
+    }
+
+    const items: Item[] = [
+      { id: 1, name: "B", updatedAt: "2024-01-02" },
+      { id: 2, name: "A", updatedAt: "2024-01-03" },
+      { id: 3, name: "C", updatedAt: "2024-01-01" },
+    ];
+
+    const store = state({
+      items: array(items, { distinct: "deep" }),
+      sortBy: "name" as "name" | "updatedAt",
+    });
+
+    let renderCount = 0;
+
+    function SortedList() {
+      renderCount++;
+      const sorted = useSelect(
+        [store.items, store.sortBy],
+        ([items, sortBy]) => {
+          return Array.from(items).sort((a, b) => {
+            if (sortBy === "name") return a.name.localeCompare(b.name);
+            return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+          });
+        },
+      );
+      return (
+        <div data-testid="sorted">
+          {sorted.map((i) => i.name).join(",")}
+        </div>
+      );
+    }
+
+    await act(async () => {
+      render(<SortedList />);
+    });
+
+    const afterInitialRender = renderCount;
+
+    // Should have rendered without infinite loop
+    expect(afterInitialRender).toBeLessThanOrEqual(2);
+    expect(screen.getByTestId("sorted").textContent).toBe("A,B,C");
+
+    // Wait a tick to make sure no more renders are queued
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Render count should not have grown
+    expect(renderCount).toBeLessThanOrEqual(afterInitialRender + 1);
+  });
+
+  test("array form: selector re-runs when inputs actually change", async () => {
+    const { array } = await import("deepstate");
+
+    const store = state({
+      items: array([3, 1, 2], { distinct: "deep" }),
+      ascending: true,
+    });
+
+    function SortedNumbers() {
+      const sorted = useSelect(
+        [store.items, store.ascending],
+        ([items, ascending]) => {
+          return Array.from(items).sort((a, b) =>
+            ascending ? a - b : b - a,
+          );
+        },
+      );
+      return <div data-testid="sorted">{sorted.join(",")}</div>;
+    }
+
+    await act(async () => {
+      render(<SortedNumbers />);
+    });
+    expect(screen.getByTestId("sorted").textContent).toBe("1,2,3");
+
+    // Change sort direction
+    await act(() => {
+      store.ascending.set(false);
+    });
+    expect(screen.getByTestId("sorted").textContent).toBe("3,2,1");
+
+    // Change items
+    await act(() => {
+      store.items.push(4);
+    });
+    expect(screen.getByTestId("sorted").textContent).toBe("4,3,2,1");
+  });
+
+  test("object form: selector returning new array does not cause infinite emissions", async () => {
+    const store = state({
+      a: 3,
+      b: 1,
+      c: 2,
+    });
+
+    let renderCount = 0;
+
+    function SortedValues() {
+      renderCount++;
+      const sorted = useSelect(
+        { a: store.a, b: store.b, c: store.c },
+        ({ a, b, c }) => [a, b, c].sort((x, y) => x - y),
+      );
+      return <div data-testid="sorted">{sorted.join(",")}</div>;
+    }
+
+    await act(async () => {
+      render(<SortedValues />);
+    });
+
+    const afterInitialRender = renderCount;
+    expect(afterInitialRender).toBeLessThanOrEqual(2);
+    expect(screen.getByTestId("sorted").textContent).toBe("1,2,3");
+
+    // Wait to confirm no runaway renders
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect(renderCount).toBeLessThanOrEqual(afterInitialRender + 1);
+  });
+
+  test("single node form: selector returning new array does not cause infinite emissions", async () => {
+    const { array } = await import("deepstate");
+
+    const store = state({
+      items: array([3, 1, 2], { distinct: "deep" }),
+    });
+
+    let renderCount = 0;
+
+    function SortedItems() {
+      renderCount++;
+      const sorted = useSelect(store.items, (items) =>
+        Array.from(items).sort((a, b) => a - b),
+      );
+      return <div data-testid="sorted">{sorted.join(",")}</div>;
+    }
+
+    await act(async () => {
+      render(<SortedItems />);
+    });
+
+    const afterInitialRender = renderCount;
+    expect(afterInitialRender).toBeLessThanOrEqual(2);
+    expect(screen.getByTestId("sorted").textContent).toBe("1,2,3");
+
+    // Wait to confirm no runaway renders
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect(renderCount).toBeLessThanOrEqual(afterInitialRender + 1);
+  });
+
+  test("selector only re-runs when input references change, not on every emission", async () => {
+    const store = state({ count: 0, label: "hello" });
+
+    let selectorRunCount = 0;
+
+    function Derived() {
+      const value = useSelect(
+        [store.count, store.label],
+        ([count, label]) => {
+          selectorRunCount++;
+          return `${label}: ${count}`;
+        },
+      );
+      return <div data-testid="value">{value}</div>;
+    }
+
+    await act(async () => {
+      render(<Derived />);
+    });
+
+    // Allow initial emissions to settle
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const afterInitial = selectorRunCount;
+
+    // Set count to the same value — input reference doesn't change for primitives
+    await act(() => {
+      store.count.set(0);
+    });
+
+    const afterSameValue = selectorRunCount;
+
+    // Selector should NOT have re-run since input didn't change
+    expect(afterSameValue).toBe(afterInitial);
+
+    // Set count to a new value — input changes
+    await act(() => {
+      store.count.set(1);
+    });
+
+    // Selector SHOULD have re-run
+    expect(selectorRunCount).toBeGreaterThan(afterSameValue);
+    expect(screen.getByTestId("value").textContent).toBe("hello: 1");
+  });
+});
+
 describe("stack overflow prevention", () => {
   test("should handle rapid TIME_UPDATE pattern (like audio playback)", async () => {
     // This simulates the exact pattern that causes stack overflow:

@@ -60,6 +60,62 @@ function isObservable(obj: unknown): obj is Observable<unknown> {
 }
 
 /**
+ * Stabilizes the identity of nodeOrNodes across re-renders.
+ *
+ * Users typically pass inline arrays like `[store.a, store.b]` or inline objects
+ * like `{ a: store.a }` to useSelect. These are new references every render,
+ * which would cause useMemo to recreate the observable pipeline, leading to
+ * resubscription and potential infinite render loops (shareReplay replays the
+ * last value → onStoreChange → re-render → new useMemo → resubscribe → replay → …).
+ *
+ * This hook compares the individual node references inside the container and
+ * returns a stable reference as long as the nodes themselves haven't changed.
+ */
+type NodeInput = Observable<unknown> | Observable<unknown>[] | Record<string, Observable<unknown>>;
+
+function useStableNodes(nodeOrNodes: NodeInput): NodeInput {
+  const ref = useRef(nodeOrNodes);
+
+  // For arrays: check element-wise identity
+  if (Array.isArray(nodeOrNodes)) {
+    const prev = ref.current;
+    if (
+      !Array.isArray(prev) ||
+      prev.length !== nodeOrNodes.length ||
+      nodeOrNodes.some((n, i) => n !== (prev as Observable<unknown>[])[i])
+    ) {
+      ref.current = nodeOrNodes;
+    }
+    return ref.current;
+  }
+
+  // For objects (not observable): check key-wise identity
+  if (!isObservable(nodeOrNodes)) {
+    const prev = ref.current;
+    if (isObservable(prev) || Array.isArray(prev)) {
+      ref.current = nodeOrNodes;
+      return ref.current;
+    }
+    const prevObj = prev as Record<string, Observable<unknown>>;
+    const currKeys = Object.keys(nodeOrNodes);
+    const prevKeys = Object.keys(prevObj);
+    if (
+      currKeys.length !== prevKeys.length ||
+      currKeys.some((k) => nodeOrNodes[k] !== prevObj[k])
+    ) {
+      ref.current = nodeOrNodes;
+    }
+    return ref.current;
+  }
+
+  // For single observable: direct identity check
+  if (nodeOrNodes !== ref.current) {
+    ref.current = nodeOrNodes;
+  }
+  return ref.current;
+}
+
+/**
  * Hook to subscribe to any Observable and get its current value.
  * Re-renders the component whenever the observable emits a new value.
  *
@@ -112,6 +168,20 @@ export function useObservable<T>(
  * This is the primary hook for using deepstate in React.
  * Uses React 18's useSyncExternalStore for concurrent-mode safety.
  *
+ * ## Selector Memoization
+ *
+ * Selectors are automatically memoized on their inputs, similar to Redux's
+ * `createSelector` / Reselect. The selector function only re-executes when
+ * input values change by reference. This means selectors that return new
+ * arrays or objects (e.g. via `.sort()`, `.filter()`, `.map()`) are safe
+ * without needing custom equality functions.
+ *
+ * Memoization works in two layers:
+ * 1. **Input dedup** — `distinctUntilChanged` before the selector prevents
+ *    re-execution when inputs are referentially identical.
+ * 2. **Output dedup** — `distinctUntilChanged(equalityFn)` after the selector
+ *    catches cases where different inputs produce equivalent outputs.
+ *
  * @example Single node (get raw value)
  * ```tsx
  * import { state } from 'deepstate';
@@ -150,6 +220,22 @@ export function useObservable<T>(
  *     user => `${user.firstName} ${user.lastName}`
  *   );
  *   return <span>{fullName}</span>;
+ * }
+ * ```
+ *
+ * @example Selector returning new array (safe - auto-memoized)
+ * ```tsx
+ * // .sort() returns a new array each time, but the selector only
+ * // re-runs when items or sortBy actually change.
+ * function SortedItems() {
+ *   const sorted = useSelect(
+ *     [store.items, store.sortBy],
+ *     ([items, sortBy]) =>
+ *       Array.from(items).sort((a, b) =>
+ *         sortBy === 'name' ? a.name.localeCompare(b.name) : b.date - a.date
+ *       ),
+ *   );
+ *   return <ItemList items={sorted} />;
  * }
  * ```
  *
@@ -239,41 +325,62 @@ export function useSelect(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   equalityFn: (a: any, b: any) => boolean = Object.is
 ): unknown {
+  // Use refs for selector and equalityFn so we always call the latest version
+  // without needing them as useMemo deps (which would recreate the observable).
+  const selectorRef = useRef(selector);
+  selectorRef.current = selector;
+  const equalityFnRef = useRef(equalityFn);
+  equalityFnRef.current = equalityFn;
+
+  // Stabilize the node identity across renders.
+  // Users pass inline arrays/objects like [store.a, store.b] or { a: store.a },
+  // which are new references each render. We extract the actual node references
+  // and only recreate the observable when the nodes themselves change.
+  const stableNodes = useStableNodes(nodeOrNodes);
+
   // Determine the form and create the combined observable
   const { combined$, getInitialValue } = useMemo(() => {
     // Array form: [node1, node2, ...] - always requires selector
-    if (Array.isArray(nodeOrNodes)) {
-      const nodes = nodeOrNodes as Observable<unknown>[];
-      const sel = selector!; // selector is required for array form
+    if (Array.isArray(stableNodes)) {
+      const nodes = stableNodes as Observable<unknown>[];
       return {
         combined$: combineLatest(nodes).pipe(
-          map((values) => sel(values)),
-          distinctUntilChanged(equalityFn)
+          // Deduplicate inputs so the selector only re-runs when an input actually changes.
+          // This prevents selectors that return new references (e.g. .sort(), .map())
+          // from causing infinite emission loops with the default Object.is equality.
+          distinctUntilChanged((a, b) =>
+            a.length === b.length && a.every((v, i) => Object.is(v, b[i]))
+          ),
+          map((values) => selectorRef.current!(values)),
+          distinctUntilChanged((a, b) => equalityFnRef.current(a, b))
         ),
         getInitialValue: (): unknown => {
           const values = nodes.map((n) => (hasGet<unknown>(n) ? n.get() : undefined));
-          return sel(values);
+          return selectorRef.current!(values);
         },
       };
     }
 
     // Object form: { a: node1, b: node2, ... } - always requires selector
-    if (!isObservable(nodeOrNodes)) {
-      const obj = nodeOrNodes as Record<string, Observable<unknown>>;
+    if (!isObservable(stableNodes)) {
+      const obj = stableNodes as Record<string, Observable<unknown>>;
       const keys = Object.keys(obj);
       const observables = keys.map((k) => obj[k]);
-      const sel = selector!; // selector is required for object form
 
       return {
         combined$: combineLatest(observables).pipe(
+          // Deduplicate inputs so the selector only re-runs when an input actually changes.
+          distinctUntilChanged((a, b) =>
+            a.length === b.length && a.every((v, i) => Object.is(v, b[i]))
+          ),
           map((values) => {
             const result: Record<string, unknown> = {};
             keys.forEach((key, i) => {
               result[key] = values[i];
             });
-            return sel(result);
+            return selectorRef.current!(result);
           }),
-          distinctUntilChanged(equalityFn)
+          distinctUntilChanged((a, b) => equalityFnRef.current(a, b))
         ),
         getInitialValue: (): unknown => {
           const result: Record<string, unknown> = {};
@@ -281,24 +388,26 @@ export function useSelect(
             const node = obj[key];
             result[key] = hasGet<unknown>(node) ? node.get() : undefined;
           });
-          return sel(result);
+          return selectorRef.current!(result);
         },
       };
     }
 
     // Single node form - selector is optional
-    const node = nodeOrNodes as Observable<unknown>;
-    
-    if (selector) {
+    const node = stableNodes as Observable<unknown>;
+
+    if (selectorRef.current) {
       // With selector - apply transformation
       return {
         combined$: node.pipe(
-          map((value) => selector(value)),
-          distinctUntilChanged(equalityFn)
+          // Deduplicate inputs so the selector only re-runs when the input actually changes.
+          distinctUntilChanged(),
+          map((value) => selectorRef.current!(value)),
+          distinctUntilChanged((a, b) => equalityFnRef.current(a, b))
         ),
         getInitialValue: (): unknown => {
           if (hasGet<unknown>(node)) {
-            return selector(node.get());
+            return selectorRef.current!(node.get());
           }
           return undefined;
         },
@@ -307,7 +416,7 @@ export function useSelect(
       // No selector - return raw value
       return {
         combined$: node.pipe(
-          distinctUntilChanged(equalityFn)
+          distinctUntilChanged((a, b) => equalityFnRef.current(a, b))
         ),
         getInitialValue: (): unknown => {
           if (hasGet<unknown>(node)) {
@@ -317,7 +426,8 @@ export function useSelect(
         },
       };
     }
-  }, [nodeOrNodes, selector, equalityFn]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stableNodes]);
 
   // Ref to hold the current derived value
   const valueRef = useRef<unknown>(getInitialValue());

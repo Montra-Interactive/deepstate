@@ -288,7 +288,25 @@ type RxNodeFor<T> =
   // Fallback
   : RxLeaf<T>;
 
-export type RxState<T extends object> = RxObject<T>;
+export type RxState<T extends object> = RxObject<T> & {
+  /**
+   * Reset the store to the initial state that was passed to `state()`.
+   *
+   * The initial state is captured at creation time via `structuredClone`,
+   * so later mutations to the original reference (or to snapshots returned
+   * from `.get()`) do not affect what `reset()` restores. Each call clones
+   * the snapshot again, so resetting twice restores the same shape both times.
+   *
+   * @example
+   * const store = state({ count: 0, items: ['a'] });
+   * store.count.set(5);
+   * store.items.push('b');
+   * store.reset();
+   * store.count.get();  // 0
+   * store.items.get();  // ['a']
+   */
+  reset(): void;
+};
 
 // =============================================================================
 // Node Creation
@@ -1238,7 +1256,7 @@ function wrapNullableWithProxy<T>(node: NullableNodeCore<T>, path: string = '', 
   return proxy as unknown as RxNullable<T>;
 }
 
-function wrapWithProxy<T>(node: NodeCore<T>, path: string = '', debugLog?: DebugLogFn): RxNodeFor<T> {
+function wrapWithProxy<T>(node: NodeCore<T>, path: string = '', debugLog?: DebugLogFn, resetFn?: () => void): RxNodeFor<T> {
   // Check for nullable node first (before checking value, since value might be null)
   if (isNullableNode(node)) {
     return wrapNullableWithProxy(node, path, debugLog) as RxNodeFor<T>;
@@ -1333,6 +1351,7 @@ function wrapWithProxy<T>(node: NodeCore<T>, path: string = '', debugLog?: Debug
       if (prop === "get") return node.get;
       if (prop === "set") return wrappedSet;
       if (prop === "update") return updateFn;
+      if (prop === "reset" && resetFn) return resetFn;
       if (prop === "subscribeOnce") return node.subscribeOnce;
       if (prop === NODE) return node;
 
@@ -1409,13 +1428,30 @@ export interface StateOptions {
 }
 
 export function state<T extends object>(initialState: T, options?: StateOptions): RxState<T> {
+  // Snapshot the initial state up front so reset() has a stable reference
+  // even after createObjectNode strips internal markers (ARRAY_MARKER,
+  // NULLABLE_MARKER) from the input. structuredClone drops symbol keys
+  // anyway, which is what we want: markers are only needed at creation time,
+  // while distinct/nullable *config* is baked into the resulting nodes.
+  const initialSnapshot = structuredClone(initialState);
+
   // Create debug log function if debug is enabled
-  const debugLog = options?.debug 
+  const debugLog = options?.debug
     ? createDebugLog({ enabled: true, storeName: options.name })
     : undefined;
-  
+
   const node = createObjectNode(initialState);
-  return wrapWithProxy(node as NodeCore<T>, '', debugLog) as RxState<T>;
+
+  const resetFn = () => {
+    // Clone the snapshot on every call so subscribers that mutate
+    // values they received via .get() can never corrupt future resets.
+    node.set(structuredClone(initialSnapshot));
+  };
+
+  // Cast via unknown: the proxy returned by wrapWithProxy adds `reset`
+  // at runtime through the get trap when resetFn is provided, which isn't
+  // visible to the structural type system.
+  return wrapWithProxy(node as NodeCore<T>, '', debugLog, resetFn) as unknown as RxState<T>;
 }
 
 // Symbol to mark a value as nullable
