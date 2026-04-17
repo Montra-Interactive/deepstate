@@ -86,6 +86,49 @@ store.user.name.subscribe(name => console.log(name));
 store.user.subscribe(user => console.log(user)); // Emits when any child changes
 ```
 
+## Resetting the Store
+
+Every store returned by `state()` has a `.reset()` method that restores the
+initial state passed at creation time:
+
+```ts
+const store = state({
+  user: { name: "Alice", age: 30 },
+  count: 0,
+  items: [1, 2, 3],
+});
+
+store.user.name.set("Bob");
+store.count.set(42);
+store.items.push(4);
+
+store.reset();
+
+store.user.name.get(); // "Alice"
+store.count.get();     // 0
+store.items.get();     // [1, 2, 3]
+```
+
+Under the hood, `state()` takes a `structuredClone` snapshot of the initial
+state at creation time and `.reset()` clones that snapshot again on every
+call. Two consequences:
+
+- **Snapshots are immutable for reset purposes.** Subscribers that mutate
+  values returned from `.get()` cannot corrupt what `.reset()` restores.
+- **Your original initial-state reference can change safely.** Mutating the
+  object you passed to `state()` after the fact does not affect future resets.
+
+`.reset()` is defined only on the root store. To reset a subtree, use
+`store.subtree.set(initialSubtree)` with your own constant.
+
+`.reset()` routes through the same machinery as `.set()`, so subscribers
+are notified for any field whose value actually changes. Fields that are
+already at their initial value are deduplicated by the normal
+`distinctUntilChanged` logic and do not emit.
+
+Typical use case: clearing every store on logout so the next user cannot
+see the previous user's data.
+
 ## Batched Updates
 
 Use `.update()` to batch multiple changes into a single emission:
@@ -539,6 +582,7 @@ import type { RxState, Draft } from "deepstate";
 | `RxObject<T>` | Above + `update()`, child properties |
 | `RxArray<T>` | Above + `at()`, `push()`, `pop()`, `length`, `map()`, `filter()` |
 | `RxNullable<T>` | Above + `update()`, optional child access |
+| `RxState<T>` | `RxObject<T>` + `reset()` (restores the initial state) |
 
 ## License
 
